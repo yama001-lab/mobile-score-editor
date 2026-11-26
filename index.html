@@ -19,6 +19,9 @@
     <input id="title" class="title-input" aria-label="曲名" />
     <span id="save-status" class="status"></span>
     <span class="spacer"></span>
+    <button id="btn-rewind" class="tb" title="先頭へ戻る">⏮</button>
+    <button id="btn-play" class="tb play" title="カーソルのある小節から再生／停止 (スペース)">▶ 再生</button>
+    <button id="btn-keyboard" class="tb" title="画面の鍵盤を表示／非表示">🎹 鍵盤</button>
     <button id="btn-undo" class="tb" title="元に戻す (Ctrl+Z)">↶</button>
     <button id="btn-redo" class="tb" title="やり直し (Ctrl+Y)">↷</button>
     <button id="btn-settings" class="tb" title="楽譜の設定">⚙ 設定</button>
@@ -62,8 +65,31 @@
     <p class="hint" id="hint"></p>
   </main>
 
-  <!-- ステップ2で画面鍵盤、ステップ3で手書き入力の面をここに置く -->
-  <section id="input-panel" hidden></section>
+  <!-- 画面の鍵盤（ステップ3で手書き入力の面もここに置く） -->
+  <section id="input-panel" hidden>
+    <div class="kb-bar">
+      <div class="group" id="kb-durations"></div>
+      <div class="group">
+        <button data-act="dot" class="pb" title="付点">付点</button>
+        <button data-act="rest" class="pb" title="休符を入れる">休符</button>
+      </div>
+      <div class="group">
+        <button data-act="chord" class="pb" title="和音モード：押した鍵を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音になります）">和音</button>
+        <button data-act="tie" class="pb" title="タイ：直前の音と同じ高さの音をタイでつないで足す">タイ</button>
+        <button data-act="back" class="pb" title="直前の入力を取り消す">⌫</button>
+      </div>
+      <span class="spacer"></span>
+      <div class="group">
+        <button id="kb-oct-down" class="pb" title="1オクターブ下へ">◀</button>
+        <span id="kb-range" class="kb-range"></span>
+        <button id="kb-oct-up" class="pb" title="1オクターブ上へ">▶</button>
+      </div>
+      <div class="group">
+        <button id="kb-sound" class="pb" title="鍵盤や入力の音を鳴らす">🔊</button>
+      </div>
+    </div>
+    <div id="keyboard" class="keyboard" aria-label="鍵盤"></div>
+  </section>
 
   <dialog id="dlg-list">
     <form method="dialog" class="dlg">
@@ -100,6 +126,7 @@
         <button type="button" id="btn-add-treble" class="pb">＋ ト音譜表</button>
         <button type="button" id="btn-add-bass" class="pb">＋ ヘ音譜表</button>
       </div>
+      <p class="note">音色は譜表ごとに「ピアノ」か「電子音」を選べます。</p>
       <div class="row end">
         <button value="cancel" class="pb">キャンセル</button>
         <button value="ok" id="btn-settings-ok" class="pb primary">適用</button>

@@ -21,11 +21,11 @@
 
 ## 今後のステップの差し込み口
 
-### ステップ2：iPad鍵盤入力と再生
-- 画面下の `#input-panel` に鍵盤を置き、押された鍵の MIDI 番号で `editor.inputMidi(midi)` を呼ぶ
-  （調号に合わせて♯／♭の綴りを選ぶ）。和音は `editor.chordMode` を使う
-- 再生は Web Audio API。各音符の開始ティックは小節の先頭からの累積、`score.tempo` で秒に直す。
-  パートごとの `instrument`（`piano` / `synth`）で音色を切り替える
+### ステップ2：iPad鍵盤入力と再生（実装済み）
+- `src/input/keyboard.ts` の `PianoKeyboard` が `#input-panel` に鍵盤を描き、押された MIDI 番号を返す。
+  `main.ts` が `editor.inputMidi(midi, chord)` を呼ぶ（他の鍵を押さえたまま押したら chord=true）
+- 再生は `src/audio/`。`buildSchedule()` が楽譜を秒単位の音の一覧にし（タイは1音にまとめる）、
+  `Player` が少し先までを Web Audio で予約していく。音色はパートの `instrument`（`piano` / `synth`）
 
 ### ステップ3：五線への手書き入力
 - 描画結果の `MeasureHit`（小節の位置、第1線のY、線の間隔、音部記号）で、ペンの座標を五線上の位置に直せる

@@ -1,8 +1,12 @@
 import './style.css';
 import { Editor } from './editor/editor';
 import { DURATION_LABELS, DurationType } from './model/duration';
-import { keyLabelJa, Step } from './model/pitch';
-import { Clef, Score, createScore } from './model/score';
+import { keyLabelJa, Step, toMidi } from './model/pitch';
+import { Clef, Instrument, Score, createScore } from './model/score';
+import { Player } from './audio/player';
+import { ScheduledMark } from './audio/schedule';
+import { playNote, unlock, Voice } from './audio/synth';
+import { PianoKeyboard } from './input/keyboard';
 import { MeasureHit, diatonicAtY, renderScore } from './render/render';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
 
@@ -51,31 +55,38 @@ function render() {
     cursor: editor.mode === 'input' ? editor.cursor : null,
   });
   hits = res.hits;
+  scoreEl.appendChild(playheadLayer);
+  drawPlayhead();
   updatePalette();
 }
 
-const durationsEl = $('#durations');
-(['w', 'h', 'q', '8', '16'] as DurationType[]).forEach((d) => {
-  const b = document.createElement('button');
-  b.className = 'pb';
-  b.dataset.duration = d;
-  b.textContent = DURATION_LABELS[d];
-  b.title = `${DURATION_LABELS[d]}音符 (${({ w: 7, h: 6, q: 5, '8': 4, '16': 3 } as Record<string, number>)[d]})`;
-  b.addEventListener('click', () => editor.setInputDuration(d));
-  durationsEl.appendChild(b);
-});
+for (const durationsEl of [$('#durations'), $('#kb-durations')]) {
+  (['w', 'h', 'q', '8', '16'] as DurationType[]).forEach((d) => {
+    const b = document.createElement('button');
+    b.className = 'pb';
+    b.dataset.duration = d;
+    b.textContent = DURATION_LABELS[d];
+    b.title = `${DURATION_LABELS[d]}音符 (${({ w: 7, h: 6, q: 5, '8': 4, '16': 3 } as Record<string, number>)[d]})`;
+    b.addEventListener('click', () => editor.setInputDuration(d));
+    durationsEl.appendChild(b);
+  });
+}
 
 function updatePalette() {
   document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
     b.classList.toggle('on', b.dataset.mode === editor.mode));
   document.querySelectorAll<HTMLButtonElement>('[data-duration]').forEach((b) =>
     b.classList.toggle('on', b.dataset.duration === editor.inputDuration));
-  $('#btn-dot').classList.toggle('on', editor.inputDots > 0);
-  $('#btn-chord').classList.toggle('on', editor.chordMode);
   const sel = editor.selected;
   const isNote = sel?.kind === 'note';
-  $('#btn-tie').classList.toggle('on', !!(isNote && sel.tie));
-  for (const id of ['#btn-up', '#btn-down', '#btn-tie']) ($(id) as HTMLButtonElement).disabled = !isNote;
+  for (const b of ['#btn-dot', '[data-act="dot"]']) $(b).classList.toggle('on', editor.inputDots > 0);
+  for (const b of ['#btn-chord', '[data-act="chord"]']) $(b).classList.toggle('on', editor.chordMode);
+  for (const b of ['#btn-tie', '[data-act="tie"]']) {
+    $(b).classList.toggle('on', !!(isNote && sel.tie));
+    ($(b) as HTMLButtonElement).disabled = !isNote;
+  }
+  ($('[data-act="back"]') as HTMLButtonElement).disabled = !editor.canUndo;
+  for (const id of ['#btn-up', '#btn-down']) ($(id) as HTMLButtonElement).disabled = !isNote;
   document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) => (b.disabled = !isNote));
   for (const id of ['#btn-left', '#btn-right', '#btn-delete']) ($(id) as HTMLButtonElement).disabled = !sel;
   ($('#btn-undo') as HTMLButtonElement).disabled = !editor.canUndo;
@@ -84,7 +95,9 @@ function updatePalette() {
   const title = $<HTMLInputElement>('#title');
   if (document.activeElement !== title) title.value = editor.score.title;
   $('#hint').textContent = editor.mode === 'input'
-    ? '入力モード：五線をタップすると、その位置に音符が入ります。音の長さは上のボタンで選びます。'
+    ? (panelShown()
+      ? '入力モード：下の鍵盤を押すと、カーソル（青い帯）の位置に音符が入ります。鍵を押さえたまま別の鍵を押すと和音になります。五線をタップして入れることもできます。'
+      : '入力モード：五線をタップすると、その位置に音符が入ります。音の長さは上のボタンで選びます。')
     : '選択モード：音符をタップして選び、上下にドラッグすると音の高さが変わります。';
 }
 
@@ -168,7 +181,19 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
   const idx = eventIndexAt(h, x);
   if (editor.mode === 'input') {
     const pos = diatonicAtY(h, y);
-    if (!(editor.chordMode || ev.shiftKey) || editor.selected?.kind !== 'note') {
+    const tapped = h.events[idx];
+    const tappedNote = tapped && editor.score.parts[h.partIndex].measures[h.measureIndex].events[idx]?.kind === 'note';
+    if ((editor.chordMode || ev.shiftKey) && tappedNote) {
+      // 和音：タップした音符に重ね、カーソルはその次へ
+      editor.select(tapped.id);
+      if (ev.shiftKey && !editor.chordMode) {
+        editor.toggleChordMode(); editor.inputDiatonic(pos); editor.toggleChordMode();
+      } else editor.inputDiatonic(pos);
+      const atEnd = idx + 1 >= h.events.length && h.measureIndex + 1 < editor.score.parts[0].measures.length;
+      editor.setCursor({ partIndex: h.partIndex, measureIndex: h.measureIndex + (atEnd ? 1 : 0), eventIndex: atEnd ? 0 : idx + 1 });
+      previewSelected(pos);
+      return;
+    } else if (!(editor.chordMode || ev.shiftKey) || editor.selected?.kind !== 'note') {
       editor.setCursor({ partIndex: h.partIndex, measureIndex: h.measureIndex, eventIndex: idx });
     }
     if (ev.shiftKey && !editor.chordMode) {
@@ -176,6 +201,7 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
       editor.inputDiatonic(pos);
       editor.toggleChordMode();
     } else editor.inputDiatonic(pos);
+    previewSelected(pos);
   } else {
     const e = h.events[idx];
     if (!e) return;
@@ -200,8 +226,13 @@ document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) =>
   b.addEventListener('click', () => editor.setSelectedAccidental(Number(b.dataset.alter))));
 on('#btn-dot', () => editor.toggleDot());
 on('#btn-rest', () => editor.inputRest());
-on('#btn-tie', () => editor.toggleTie());
+on('#btn-tie', () => { editor.toggleTie(); previewSelected(); });
 on('#btn-chord', () => editor.toggleChordMode());
+on('[data-act="dot"]', () => editor.toggleDot());
+on('[data-act="rest"]', () => { if (editor.mode !== 'input') editor.setMode('input'); editor.inputRest(); });
+on('[data-act="tie"]', () => { if (editor.mode !== 'input') editor.setMode('input'); editor.toggleTie(); previewSelected(); });
+on('[data-act="chord"]', () => editor.toggleChordMode());
+on('[data-act="back"]', () => editor.undo());
 on('#btn-up', () => editor.transposeSelected(1));
 on('#btn-down', () => editor.transposeSelected(-1));
 on('#btn-left', () => editor.shiftSelected(-1));
@@ -249,6 +280,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && k.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) editor.redo(); else editor.undo(); return; }
   if (mod && k.toLowerCase() === 'y') { e.preventDefault(); editor.redo(); return; }
   if (mod) return;
+  if (k === ' ') { e.preventDefault(); togglePlay(); return; }
   if (/^[a-gA-G]$/.test(k)) {
     if (editor.mode !== 'input') editor.setMode('input');
     if (e.shiftKey && editor.selected?.kind === 'note') {
@@ -358,7 +390,7 @@ for (let f = -7; f <= 7; f++) {
   const label = f === 0 ? '調号なし（ハ長調／イ短調）' : `${Math.abs(f)}${f > 0 ? '♯' : '♭'}（${keyLabelJa(f)}）`;
   keySel.add(new Option(label, String(f)));
 }
-let pendingClefs: { clef: Clef; remove: boolean; isNew: boolean }[] = [];
+let pendingClefs: { clef: Clef; instrument: Instrument; remove: boolean; isNew: boolean }[] = [];
 
 function renderPartList() {
   const ul = $('#part-list');
@@ -373,13 +405,18 @@ function renderPartList() {
     [['treble', 'ト音記号'], ['bass', 'ヘ音記号'], ['alto', 'ハ音記号（アルト）']].forEach(([v, t]) => sel.add(new Option(t, v)));
     sel.value = p.clef;
     sel.addEventListener('change', () => (p.clef = sel.value as Clef));
+    const inst = document.createElement('select');
+    inst.title = '音色';
+    [['piano', 'ピアノ'], ['synth', '電子音']].forEach(([v, t]) => inst.add(new Option(t, v)));
+    inst.value = p.instrument;
+    inst.addEventListener('change', () => (p.instrument = inst.value as Instrument));
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'pb danger';
     del.textContent = '削除';
     del.disabled = pendingClefs.filter((q) => !q.remove).length <= 1;
     del.addEventListener('click', () => { p.remove = true; renderPartList(); });
-    li.append(label, sel, del);
+    li.append(label, sel, inst, del);
     ul.appendChild(li);
   });
 }
@@ -392,12 +429,12 @@ on('#btn-settings', () => {
   beatsSel.value = String(s.timeSignature.beats);
   $<HTMLSelectElement>('#set-beattype').value = String(s.timeSignature.beatType);
   keySel.value = String(s.keyFifths);
-  pendingClefs = s.parts.map((p) => ({ clef: p.clef, remove: false, isNew: false }));
+  pendingClefs = s.parts.map((p) => ({ clef: p.clef, instrument: p.instrument, remove: false, isNew: false }));
   renderPartList();
   dlgSet.showModal();
 });
-on('#btn-add-treble', () => { pendingClefs.push({ clef: 'treble', remove: false, isNew: true }); renderPartList(); });
-on('#btn-add-bass', () => { pendingClefs.push({ clef: 'bass', remove: false, isNew: true }); renderPartList(); });
+on('#btn-add-treble', () => { pendingClefs.push({ clef: 'treble', instrument: 'piano', remove: false, isNew: true }); renderPartList(); });
+on('#btn-add-bass', () => { pendingClefs.push({ clef: 'bass', instrument: 'piano', remove: false, isNew: true }); renderPartList(); });
 
 dlgSet.addEventListener('close', () => {
   if (dlgSet.returnValue !== 'ok') return;
@@ -425,12 +462,170 @@ dlgSet.addEventListener('close', () => {
   kept.forEach((p, i) => {
     if (!p.isNew && editor.score.parts[i] && editor.score.parts[i].clef !== p.clef) editor.setPartClef(i, p.clef);
     if (p.isNew) editor.addPart(p.clef);
+    if (editor.score.parts[i] && editor.score.parts[i].instrument !== p.instrument) editor.setPartInstrument(i, p.instrument);
   });
+});
+
+// ---------- 音（入力時の確認音） ----------
+
+let soundOn = safeGet('score-editor:sound') !== '0';
+function updateSoundButton() {
+  const b = $('#kb-sound');
+  b.textContent = soundOn ? '🔊' : '🔇';
+  b.classList.toggle('on', soundOn);
+}
+on('#kb-sound', () => { soundOn = !soundOn; safeSet('score-editor:sound', soundOn ? '1' : '0'); updateSoundButton(); });
+updateSoundButton();
+
+const currentInstrument = () => editor.score.parts[editor.cursor.partIndex]?.instrument ?? 'piano';
+
+/** 入力した音符を短く鳴らす。pos を渡すと、和音のうちその高さの音だけ鳴らす */
+function previewSelected(pos?: number) {
+  if (!soundOn || player.playing) return;
+  const ev = editor.selected;
+  if (!ev || ev.kind !== 'note') return;
+  const ps = pos === undefined ? ev.pitches : ev.pitches.filter((p) => p.octave * 7 + 'CDEFGAB'.indexOf(p.step) === pos);
+  for (const p of ps.length ? ps : ev.pitches) playNote(currentInstrument(), toMidi(p), undefined, 0.45);
+}
+
+// iPadで音が出るよう、最初に触れたときに音の準備をする
+document.addEventListener('pointerdown', unlock, { capture: true, once: true });
+document.addEventListener('keydown', unlock, { capture: true, once: true });
+
+// ---------- 画面の鍵盤 ----------
+
+const panel = $('#input-panel');
+const panelShown = () => !panel.hidden;
+const held = new Map<number, Voice>();
+const keyboard = new PianoKeyboard($('#keyboard'), {
+  onPress(midi, alsoHeld) {
+    if (editor.mode !== 'input') editor.setMode('input');
+    // 他の鍵を押さえたまま押した鍵は、直前に入れた音に和音として重ねる
+    editor.inputMidi(midi, alsoHeld);
+    if (soundOn && !player.playing) {
+      held.get(midi)?.stop();
+      const v = playNote(currentInstrument(), midi);
+      if (v) held.set(midi, v);
+    }
+  },
+  onRelease(midi) {
+    held.get(midi)?.stop();
+    held.delete(midi);
+  },
+}, Number(safeGet('score-editor:kb-octave')) || 3);
+
+function updateRange() {
+  $('#kb-range').textContent = keyboard.rangeLabel();
+  safeSet('score-editor:kb-octave', String(keyboard.startOctave));
+}
+function setPanel(show: boolean) {
+  panel.hidden = !show;
+  $('#btn-keyboard').classList.toggle('on', show);
+  safeSet('score-editor:keyboard', show ? '1' : '0');
+  if (show) { keyboard.layout(); updateRange(); }
+  requestRender();
+}
+on('#btn-keyboard', () => setPanel(panel.hidden));
+on('#kb-oct-down', () => { keyboard.shiftOctave(-1); updateRange(); });
+on('#kb-oct-up', () => { keyboard.shiftOctave(1); updateRange(); });
+
+// ---------- 再生 ----------
+
+const player = new Player();
+const playheadLayer = document.createElement('div');
+playheadLayer.className = 'playhead-layer';
+/** パートごとの、いま鳴っている音符の位置 */
+let playMarks: (ScheduledMark | null)[] = [];
+
+function drawPlayhead() {
+  playheadLayer.innerHTML = '';
+  for (const m of playMarks) {
+    if (!m) continue;
+    const h = hits.find((x) => x.partIndex === m.partIndex && x.measureIndex === m.measureIndex);
+    const e = h?.events[m.eventIndex];
+    if (!h || !e) continue;
+    const d = document.createElement('div');
+    d.className = 'playhead';
+    d.style.left = (e.x - 8) * zoom + 'px';
+    d.style.top = (h.topLineY - 24) * zoom + 'px';
+    d.style.width = 30 * zoom + 'px';
+    d.style.height = (h.lineSpacing * 4 + 48) * zoom + 'px';
+    playheadLayer.appendChild(d);
+  }
+  const first = playheadLayer.firstElementChild as HTMLElement | null;
+  if (first) {
+    // 見えていなければスクロールして追いかける
+    const r = first.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    if (r.top < w.top || r.bottom > w.bottom) wrap.scrollBy({ top: r.top - w.top - 60, behavior: 'smooth' });
+  }
+}
+
+function litKeys() {
+  const set = new Set<number>();
+  for (const m of playMarks) {
+    const ev = m && editor.score.parts[m.partIndex]?.measures[m.measureIndex]?.events[m.eventIndex];
+    if (ev && ev.kind === 'note') for (const p of ev.pitches) set.add(toMidi(p));
+  }
+  keyboard.highlight(set);
+}
+
+function updatePlayButton() {
+  const b = $('#btn-play');
+  b.textContent = player.playing ? '■ 停止' : '▶ 再生';
+  b.classList.toggle('on', player.playing);
+}
+
+function stopPlayback() {
+  player.stop();
+}
+
+function togglePlay(fromMeasure = editor.cursor.measureIndex) {
+  if (player.playing) { stopPlayback(); return; }
+  for (const v of held.values()) v.stop();
+  held.clear();
+  playMarks = [];
+  const ok = player.play(editor.score, {
+    fromMeasure,
+    onMark(m) {
+      playMarks[m.partIndex] = m;
+      drawPlayhead();
+      litKeys();
+    },
+    onEnd() {
+      playMarks = [];
+      drawPlayhead();
+      litKeys();
+      updatePlayButton();
+    },
+  });
+  if (!ok) alert('このブラウザでは音を鳴らせません。');
+  updatePlayButton();
+}
+
+on('#btn-play', () => togglePlay());
+on('#btn-rewind', () => {
+  const wasPlaying = player.playing;
+  stopPlayback();
+  editor.select(null);
+  editor.setCursor({ partIndex: editor.cursor.partIndex, measureIndex: 0, eventIndex: 0 });
+  wrap.scrollTo({ top: 0, behavior: 'smooth' });
+  if (wasPlaying) togglePlay(0);
+});
+// 楽譜を切り替えたら止める
+let playingScoreId = editor.score.id;
+editor.onChange(() => {
+  if (editor.score.id !== playingScoreId) { playingScoreId = editor.score.id; stopPlayback(); }
 });
 
 // ---------- 起動 ----------
 
-window.addEventListener('resize', requestRender);
+window.addEventListener('resize', () => {
+  if (panelShown()) { keyboard.layout(); updateRange(); }
+  requestRender();
+});
+// 初めての人には鍵盤を出しておく
+setPanel(safeGet('score-editor:keyboard') !== '0');
 render();
 saveScore(editor.score);
 statusEl.textContent = '保存済み';
