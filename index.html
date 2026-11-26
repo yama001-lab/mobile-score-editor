@@ -55,11 +55,15 @@
         <div class="seg" role="radiogroup" aria-label="モード">
           <button data-mode="select" class="seg-b" data-icon="select" title="選択モード：音符を選んで直す (Esc)"><span>選択</span></button>
           <button data-mode="input" class="seg-b" data-icon="input" title="入力モード：五線をタップ、または鍵盤で入れる (N)"><span>入力</span></button>
-          <button data-mode="pen" class="seg-b soon" data-icon="pen" title="手書きモード：ペンで五線に書いた音符を読み取る（次のステップで追加）"><span>手書き</span></button>
+          <button data-mode="pen" class="seg-b" data-icon="pen" title="手書きモード：ペンで五線に書いた音符を読み取る (P)"><span>手書き</span></button>
         </div>
         <button id="btn-keyboard" class="tool" data-icon="keyboard" title="画面の鍵盤を表示／非表示"><span>鍵盤</span></button>
       </div>
       <div class="palette-scroll" id="palette">
+        <div class="group" id="pen-tools" aria-label="手書き" hidden>
+          <button id="btn-finger" class="tool" data-icon="finger" title="指でも書く（オフにするとペンだけで書き、指でスクロール）"><span>指で書く</span></button>
+          <button id="btn-pen-help" class="tool" data-icon="help" title="手書きの書き方"><span>書き方</span></button>
+        </div>
         <div class="group" id="durations" aria-label="音の長さ"></div>
         <div class="group">
           <button id="btn-dot" class="tool" data-icon="dot" title="付点 (.)"><span>付点</span></button>
@@ -143,6 +147,28 @@
         <button value="cancel" class="pb">キャンセル</button>
         <button value="ok" class="pb primary">決定</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-pen-help">
+    <form method="dialog" class="dlg">
+      <h2>手書きの書き方</h2>
+      <p class="note">五線の間隔に合わせた大きさで書き、少し待つと音符に変わります。高さは音符の頭（丸）の位置で決まります。</p>
+      <ul class="pen-guide">
+        <li><b>白丸</b>…全音符</li>
+        <li><b>白丸＋縦棒</b>…2分音符</li>
+        <li><b>黒丸＋縦棒</b>…4分音符（黒丸はぐるぐる塗りつぶす）</li>
+        <li><b>黒丸＋縦棒＋旗1本／2本</b>…8分／16分音符</li>
+        <li><b>黒丸だけ</b>…パレットで選んでいる長さ</li>
+        <li><b>音符の右に点</b>…付点（あとから点だけ書き足してもよい）</li>
+        <li><b>音符の左に ♯ ♭ ♮</b>…臨時記号（あとから書き足すと右の音符に付く）</li>
+        <li><b>今ある音符の真上・真下に丸</b>…和音</li>
+        <li><b>ギザギザの縦線</b>…4分休符、<b>「7」</b>…8分休符、<b>横の短い棒</b>…全休符（上の線の下）・2分休符（真ん中の線の上）</li>
+        <li><b>音符の上を横にこする／×を書く</b>…消す</li>
+      </ul>
+      <p class="note">青い帯（入力位置）より右に書くと、続けて入ります。それより左に書くと、その位置の音を書き換えます。間違えたら「元に戻す」で戻せます。</p>
+      <p class="note">2本指でスクロールできます。指で触って線が出てしまうときは「指で書く」をオフにすると、ペンだけで書けます（安価なペンは指と区別できないことがあります）。</p>
+      <div class="row end"><button value="ok" class="pb primary">閉じる</button></div>
     </form>
   </dialog>
 
