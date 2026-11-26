@@ -1,5 +1,5 @@
 {
-  "name": "score-editor",
+  "name": "mobile-score-editor",
   "version": "0.1.0",
   "description": "iPadで使える軽量な楽譜エディタ（PWA）",
   "scripts": {
