@@ -6,7 +6,7 @@ import {
   Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Voice,
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
-import { Clef, MusicEvent, Score, measureCapacity } from '../model/score';
+import { Clef, MusicEvent, Score, measureCapacity, tempoMarkAt } from '../model/score';
 
 export interface RenderOptions {
   /** 描画に使う論理幅（px） */
@@ -212,9 +212,46 @@ export function paginate(score: Score, systems: SystemLayout[], pageHeight: numb
   return pages;
 }
 
+/** テンポ表記の位置（タップで変更するため） */
+export interface TempoHit {
+  measure: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface RenderResult {
   hits: MeasureHit[];
+  tempoHits: TempoHit[];
   height: number;
+}
+
+type Ctx = ReturnType<Renderer['getContext']>;
+
+/** 「♩ = 120」を描く。♩は図形で描く（PDFの標準フォントに♩がないため）。y は文字のベースライン */
+function drawTempo(ctx: Ctx, x: number, y: number, tempo: number): TempoHit & { measure: -1 } {
+  ctx.save();
+  ctx.setFillStyle('#000');
+  ctx.setStrokeStyle('#000');
+  ctx.beginPath();
+  // 符頭（少し傾いた楕円の代わりに、横長の円を2つ重ねる）
+  ctx.arc(x + 4, y - 3, 3.6, 0, Math.PI * 2, false);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x + 5.2, y - 3.6, 3.2, 0, Math.PI * 2, false);
+  ctx.fill();
+  ctx.setLineWidth(1.2);
+  ctx.beginPath();
+  ctx.moveTo(x + 8, y - 4);
+  ctx.lineTo(x + 8, y - 19);
+  ctx.stroke();
+  ctx.setFont('serif', 13, 'bold');
+  const label = `= ${tempo}`;
+  ctx.fillText(label, x + 13, y);
+  const w = 13 + ctx.measureText(label).width;
+  ctx.restore();
+  return { measure: -1, x: x - 6, y: y - 24, w: w + 12, h: 32 };
 }
 
 /** 1ページ（画面ではすべて）を el の中に SVG で描く */
@@ -229,6 +266,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   const ctx = renderer.getContext();
   ctx.scale(scale, scale);
   const hits: MeasureHit[] = [];
+  const tempoHits: TempoHit[] = [];
 
   if (page.first && opts.drawTitle !== false) {
     ctx.save();
@@ -240,9 +278,8 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       const cw = ctx.measureText(score.composer).width;
       ctx.fillText(score.composer, opts.width - MARGIN_X - cw, topMargin + 72);
     }
-    ctx.setFont('serif', 12, 'normal');
-    ctx.fillText(`♩ = ${score.tempo}`, MARGIN_X, topMargin + 72);
     ctx.restore();
+    tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
   }
 
   const allNotes = new Map<string, { note: StaveNote; system: number }>();
@@ -264,6 +301,11 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       const noteStart = Math.max(...staves.map((s) => s.getNoteStartX()));
       staves.forEach((s) => s.setNoteStartX(noteStart));
       staves.forEach((s) => s.setContext(ctx).draw());
+      const mark = mi > 0 ? tempoMarkAt(score, mi) : null;
+      if (mark !== null) {
+        const tx = k === 0 ? noteStart - 4 : x + 6;
+        tempoHits.push({ ...drawTempo(ctx, tx, staves[0].getYForLine(0) - 22, mark), measure: mi });
+      }
 
       const built = score.parts.map((_, pi) => buildMeasure(score, pi, mi, opts));
       const f = new Formatter();
@@ -356,7 +398,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
     }
   }
 
-  return { hits, height };
+  return { hits, tempoHits, height };
 }
 
 function nextEvent(score: Score, pi: number, mi: number, ei: number): MusicEvent | undefined {

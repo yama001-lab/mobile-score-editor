@@ -51,6 +51,13 @@ export interface Part {
   measures: Measure[];
 }
 
+export interface TempoMark {
+  /** 小節番号（0始まり、1以上） */
+  measure: number;
+  /** 4分音符 = tempo/分 */
+  tempo: number;
+}
+
 export interface Score {
   schemaVersion: number;
   id: string;
@@ -63,6 +70,10 @@ export interface Score {
   keyFifths: number;
   /** 全パートの小節数は常に同じ */
   parts: Part[];
+  /** 途中のテンポ変更（その小節の頭から）。1小節目のテンポは tempo。小節番号の昇順 */
+  tempoMarks?: TempoMark[];
+  /** 再生のチューニング：A4（ラ）の周波数 Hz。省略時は 440 */
+  tuning?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -216,6 +227,19 @@ export function reflowPart(part: Part, capacity: number): void {
   if (!measures.length) measures.push(createMeasure(capacity));
   measures.forEach((m) => normalizeMeasure(m, capacity));
   part.measures = measures;
+}
+
+/** その小節で有効なテンポ */
+export function tempoAt(score: Score, measure: number): number {
+  let t = score.tempo;
+  for (const m of score.tempoMarks ?? []) if (m.measure <= measure) t = m.tempo;
+  return t;
+}
+
+/** 小節の頭にテンポ表記があるか（1小節目はいつもある） */
+export function tempoMarkAt(score: Score, measure: number): number | null {
+  if (measure === 0) return score.tempo;
+  return score.tempoMarks?.find((m) => m.measure === measure)?.tempo ?? null;
 }
 
 /** 全パートの小節数を最長に合わせる。 */

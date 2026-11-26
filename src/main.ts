@@ -2,12 +2,12 @@ import './style.css';
 import { Editor } from './editor/editor';
 import { DURATION_LABELS, DurationType } from './model/duration';
 import { keyLabelJa, Step, toMidi } from './model/pitch';
-import { Clef, Instrument, Score, createScore } from './model/score';
+import { Clef, Instrument, Score, createScore, tempoAt, tempoMarkAt } from './model/score';
 import { Player } from './audio/player';
 import { ScheduledMark } from './audio/schedule';
-import { playNote, unlock, Voice } from './audio/synth';
+import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
-import { MeasureHit, diatonicAtY, renderScore } from './render/render';
+import { MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -22,6 +22,7 @@ const editor = new Editor(initialScore());
 const scoreEl = $('#score');
 const wrap = $('#score-wrap');
 let hits: MeasureHit[] = [];
+let tempoHits: TempoHit[] = [];
 let zoom = Number(safeGet('score-editor:zoom')) || 1;
 
 function safeGet(k: string) {
@@ -55,7 +56,9 @@ function render() {
     cursor: editor.mode === 'input' ? editor.cursor : null,
   });
   hits = res.hits;
+  tempoHits = res.tempoHits;
   scoreEl.appendChild(playheadLayer);
+  focusInputPosition();
   drawPlayhead();
   updatePalette();
 }
@@ -151,6 +154,8 @@ let drag: { pointerId: number; startY: number; moved: boolean; onSelected: boole
 scoreEl.addEventListener('pointerdown', (ev) => {
   if (ev.button > 0) return;
   const { x, y } = localPoint(ev);
+  const th = tempoHits.find((t) => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h);
+  if (th) { tempoTap = { pointerId: ev.pointerId, measure: th.measure }; return; }
   const h = hitAt(x, y);
   if (!h) return;
   const idx = eventIndexAt(h, x);
@@ -170,7 +175,15 @@ scoreEl.addEventListener('pointermove', (ev) => {
 // ドラッグ中は画面がスクロールしないようにする（iPadのSafari向け）
 scoreEl.addEventListener('touchmove', (ev) => { if (drag?.onSelected) ev.preventDefault(); }, { passive: false });
 
+let tempoTap: { pointerId: number; measure: number } | null = null;
+
 function endPointer(ev: PointerEvent, cancelled: boolean) {
+  if (tempoTap && tempoTap.pointerId === ev.pointerId) {
+    const m = tempoTap.measure;
+    tempoTap = null;
+    if (!cancelled) openTempo(m);
+    return;
+  }
   if (!drag || ev.pointerId !== drag.pointerId) return;
   const d = drag;
   drag = null;
@@ -426,6 +439,7 @@ on('#btn-settings', () => {
   $<HTMLInputElement>('#set-title').value = s.title;
   $<HTMLInputElement>('#set-composer').value = s.composer;
   $<HTMLInputElement>('#set-tempo').value = String(s.tempo);
+  $<HTMLInputElement>('#set-tuning').value = String(s.tuning ?? 440);
   beatsSel.value = String(s.timeSignature.beats);
   $<HTMLSelectElement>('#set-beattype').value = String(s.timeSignature.beatType);
   keySel.value = String(s.keyFifths);
@@ -442,7 +456,11 @@ dlgSet.addEventListener('close', () => {
   const title = $<HTMLInputElement>('#set-title').value.trim() || '無題の楽譜';
   const composer = $<HTMLInputElement>('#set-composer').value.trim();
   const tempo = Math.min(300, Math.max(20, Number($<HTMLInputElement>('#set-tempo').value) || 100));
-  if (title !== s.title || composer !== s.composer || tempo !== s.tempo) editor.updateMeta({ title, composer, tempo });
+  const tuningRaw = Number($<HTMLInputElement>('#set-tuning').value);
+  const tuning = Math.round(Math.min(480, Math.max(400, tuningRaw || 440)) * 10) / 10;
+  if (title !== s.title || composer !== s.composer || tempo !== s.tempo || tuning !== (s.tuning ?? 440)) {
+    editor.updateMeta({ title, composer, tempo, tuning });
+  }
   const fifths = Number(keySel.value);
   if (fifths !== s.keyFifths) editor.setKeySignature(fifths);
   const beats = Number(beatsSel.value);
@@ -524,6 +542,8 @@ function setPanel(show: boolean) {
   safeSet('score-editor:keyboard', show ? '1' : '0');
   if (show) { keyboard.layout(); updateRange(); }
   requestRender();
+  // 鍵盤で隠れた入力位置を見えるようにする
+  requestAnimationFrame(() => requestAnimationFrame(() => focusInputPosition(true)));
 }
 on('#btn-keyboard', () => setPanel(panel.hidden));
 on('#kb-oct-down', () => { keyboard.shiftOctave(-1); updateRange(); });
@@ -617,6 +637,97 @@ let playingScoreId = editor.score.id;
 editor.onChange(() => {
   if (editor.score.id !== playingScoreId) { playingScoreId = editor.score.id; stopPlayback(); }
 });
+
+// ---------- テンポ ----------
+
+const dlgTempo = $<HTMLDialogElement>('#dlg-tempo');
+const tempoInput = $<HTMLInputElement>('#tempo-value');
+let tempoMeasure = 0;
+const PRESETS: [string, number][] = [
+  ['Largo', 50], ['Adagio', 66], ['Andante', 76], ['Moderato', 100], ['Allegro', 128], ['Vivace', 152], ['Presto', 176],
+];
+for (const [name, bpm] of PRESETS) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'pb';
+  b.textContent = `${name} ${bpm}`;
+  b.addEventListener('click', () => (tempoInput.value = String(bpm)));
+  $('#tempo-presets').appendChild(b);
+}
+document.querySelectorAll<HTMLButtonElement>('[data-tempo-step]').forEach((b) =>
+  b.addEventListener('click', () => {
+    const v = (Number(tempoInput.value) || 100) + Number(b.dataset.tempoStep);
+    tempoInput.value = String(Math.min(300, Math.max(20, v)));
+  }));
+
+/** テンポの入力画面。measure 0 は曲の最初のテンポ、それ以外はその小節からのテンポ変更 */
+function openTempo(measure: number) {
+  tempoMeasure = measure;
+  tempoInput.value = String(tempoAt(editor.score, measure));
+  $('#tempo-heading').textContent = measure === 0 ? '曲のテンポ' : `${measure + 1}小節目からのテンポ`;
+  $('#btn-tempo-remove').hidden = measure === 0 || tempoMarkAt(editor.score, measure) === null;
+  dlgTempo.showModal();
+}
+on('#btn-tempo', () => openTempo(
+  (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex));
+on('#btn-tempo-remove', () => { editor.removeTempo(tempoMeasure); dlgTempo.close('removed'); });
+dlgTempo.addEventListener('close', () => {
+  if (dlgTempo.returnValue !== 'ok') return;
+  const v = Number(tempoInput.value);
+  if (!v) return;
+  // 直前と同じテンポにした途中の変更は不要なので消す
+  if (tempoMeasure > 0 && Math.round(v) === tempoAt(editor.score, tempoMeasure - 1)) editor.removeTempo(tempoMeasure);
+  else editor.setTempo(tempoMeasure, v);
+});
+
+// ---------- チューニング ----------
+
+setTuning(editor.score.tuning ?? 440);
+editor.onChange(() => setTuning(editor.score.tuning ?? 440));
+
+// ---------- 入力位置へのスクロール ----------
+
+let lastFocusKey = '';
+/** カーソル（選択モードでは選択中の音符）が見えていなければ、見える位置までスクロールする */
+function focusInputPosition(force = false) {
+  const loc = editor.mode === 'input' ? editor.cursor : editor.selectedLocation;
+  if (!loc) return;
+  const key = `${editor.mode}:${loc.partIndex}:${loc.measureIndex}:${loc.eventIndex}`;
+  if (!force && key === lastFocusKey) return;
+  lastFocusKey = key;
+  if (player.playing) return;
+  const h = hits.find((x) => x.partIndex === loc.partIndex && x.measureIndex === loc.measureIndex);
+  if (!h) return;
+  const e = h.events[Math.min(loc.eventIndex, h.events.length - 1)];
+  const s = scoreEl.getBoundingClientRect();
+  const w = wrap.getBoundingClientRect();
+  const top = s.top + (h.topLineY - 50) * zoom;
+  const bottom = s.top + (h.topLineY + h.lineSpacing * 4 + 50) * zoom;
+  const left = s.left + ((e?.x ?? h.x0) - 40) * zoom;
+  const right = s.left + ((e?.x ?? h.x1) + 60) * zoom;
+  let dy = 0;
+  let dx = 0;
+  if (top < w.top) dy = top - w.top - 20;
+  else if (bottom > w.bottom) dy = bottom - w.bottom + 20;
+  if (left < w.left) dx = left - w.left;
+  else if (right > w.right) dx = right - w.right;
+  if (dx || dy) wrap.scrollBy({ left: dx, top: dy, behavior: 'smooth' });
+}
+
+// ---------- ダブルタップでの拡大を止める ----------
+
+// CSS の touch-action が効かない古いiPadOS向け。すばやい2回目のタップは拡大の代わりにクリックにする。
+let lastTouchEnd = 0;
+document.addEventListener('touchend', (e) => {
+  const now = Date.now();
+  const t = e.target as HTMLElement;
+  if (now - lastTouchEnd < 350 && !t.closest('input, select, textarea')) {
+    e.preventDefault();
+    if (t.closest('button, label')) (t.closest('button, label') as HTMLElement).click();
+  }
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('dblclick', (e) => e.preventDefault());
 
 // ---------- 起動 ----------
 

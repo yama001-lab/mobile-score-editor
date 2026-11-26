@@ -55,6 +55,7 @@
     <div class="group">
       <button id="btn-add-measure" class="pb" title="小節を追加">＋小節</button>
       <button id="btn-remove-measure" class="pb" title="カーソルのある小節を削除">−小節</button>
+      <button id="btn-tempo" class="pb" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）">♩= テンポ</button>
       <button id="btn-zoom-out" class="pb" title="縮小">−</button>
       <button id="btn-zoom-in" class="pb" title="拡大">＋</button>
     </div>
@@ -107,12 +108,35 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-tempo">
+    <form method="dialog" class="dlg">
+      <h2 id="tempo-heading">テンポ</h2>
+      <div class="row tempo-row">
+        <button type="button" class="pb" data-tempo-step="-5">−5</button>
+        <button type="button" class="pb" data-tempo-step="-1">−1</button>
+        <label class="tempo-input">♩ = <input id="tempo-value" type="number" min="20" max="300" inputmode="numeric" /></label>
+        <button type="button" class="pb" data-tempo-step="1">＋1</button>
+        <button type="button" class="pb" data-tempo-step="5">＋5</button>
+      </div>
+      <div class="row" id="tempo-presets"></div>
+      <div class="row end">
+        <button type="button" id="btn-tempo-remove" class="pb danger">この変更を消す</button>
+        <span class="spacer"></span>
+        <button value="cancel" class="pb">キャンセル</button>
+        <button value="ok" class="pb primary">決定</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dlg-settings">
     <form method="dialog" class="dlg">
       <h2>楽譜の設定</h2>
       <label>曲名 <input id="set-title" /></label>
       <label>作曲者 <input id="set-composer" /></label>
-      <label>テンポ（♩=） <input id="set-tempo" type="number" min="20" max="300" /></label>
+      <div class="row">
+        <label>テンポ（♩=） <input id="set-tempo" type="number" min="20" max="300" inputmode="numeric" /></label>
+        <label>チューニング A4 = <input id="set-tuning" type="number" min="400" max="480" step="0.5" inputmode="decimal" /> Hz</label>
+      </div>
       <div class="row">
         <label>拍子
           <select id="set-beats"></select> /
