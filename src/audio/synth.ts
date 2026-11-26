@@ -39,7 +39,12 @@ export function unlock() {
   s.start(0);
 }
 
-const freqOf = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+let a4 = 440;
+/** チューニング（A4の周波数 Hz）を変える */
+export function setTuning(hz: number) {
+  a4 = Math.min(480, Math.max(400, hz || 440));
+}
+const freqOf = (midi: number) => a4 * Math.pow(2, (midi - 69) / 12);
 
 export interface Voice {
   /** 音を止める（離鍵）。when は AudioContext の時刻、省略で今すぐ */

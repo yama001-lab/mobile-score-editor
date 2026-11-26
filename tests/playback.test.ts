@@ -75,3 +75,41 @@ describe('鍵盤からの入力', () => {
     expect(n.kind === 'note' && n.pitches[0]).toEqual({ step: 'B', alter: -1, octave: 4 });
   });
 });
+
+describe('テンポ', () => {
+  it('途中のテンポ変更が再生の時刻に反映される', () => {
+    const e = new Editor(createScore({ tempo: 60 }));
+    e.setInputDuration('w');
+    e.inputMidi(60);
+    e.inputMidi(62);
+    e.inputMidi(64);
+    e.setTempo(1, 120);
+    const s = buildSchedule(e.score);
+    expect(s.notes.map((n) => [n.time, n.duration])).toEqual([[0, 4], [4, 2], [6, 2]]);
+    // 途中から再生しても、その時点のテンポを使う
+    expect(buildSchedule(e.score, 2).notes[0]).toMatchObject({ midi: 64, time: 0, duration: 2 });
+  });
+
+  it('テンポ変更をまたぐタイは、それぞれのテンポで長さを足す', () => {
+    const e = new Editor(createScore({ tempo: 60 }));
+    e.setInputDuration('w');
+    e.inputMidi(60);
+    e.toggleTie();
+    e.setTempo(1, 120);
+    expect(buildSchedule(e.score).notes).toEqual([expect.objectContaining({ time: 0, duration: 6 })]);
+  });
+
+  it('小節の追加・削除でテンポ変更の位置がずれない', () => {
+    const e = new Editor(createScore());
+    e.setTempo(3, 80);
+    e.addMeasure(0);
+    expect(e.score.tempoMarks).toEqual([{ measure: 4, tempo: 80 }]);
+    e.removeMeasure(1);
+    e.removeMeasure(3);
+    expect(e.score.tempoMarks).toEqual([{ measure: 3, tempo: 80 }]);
+    e.setTempo(0, 90);
+    expect(e.score.tempo).toBe(90);
+    e.removeTempo(3);
+    expect(e.score.tempoMarks).toEqual([]);
+  });
+});

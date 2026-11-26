@@ -486,6 +486,28 @@ export class Editor {
   addMeasure(after = this.score.parts[0].measures.length - 1) {
     this.mutate(() => {
       for (const p of this.score.parts) p.measures.splice(after + 1, 0, createMeasure(this.capacity));
+      for (const t of this.score.tempoMarks ?? []) if (t.measure > after) t.measure++;
+    });
+  }
+
+  /** テンポを設定する。measure 0 は曲の最初のテンポ、それ以外は途中のテンポ変更 */
+  setTempo(measure: number, tempo: number) {
+    tempo = Math.round(Math.min(300, Math.max(20, tempo)));
+    this.mutate(() => {
+      if (measure <= 0) { this.score.tempo = tempo; return; }
+      const marks = (this.score.tempoMarks ??= []);
+      const m = marks.find((t) => t.measure === measure);
+      if (m) m.tempo = tempo;
+      else marks.push({ measure, tempo });
+      marks.sort((a, b) => a.measure - b.measure);
+    });
+  }
+
+  /** 途中のテンポ変更を消す */
+  removeTempo(measure: number) {
+    if (!this.score.tempoMarks?.some((t) => t.measure === measure)) return;
+    this.mutate(() => {
+      this.score.tempoMarks = this.score.tempoMarks!.filter((t) => t.measure !== measure);
     });
   }
 
@@ -493,13 +515,21 @@ export class Editor {
     if (this.score.parts[0].measures.length <= 1) return;
     this.mutate(() => {
       for (const p of this.score.parts) p.measures.splice(index, 1);
+      if (this.score.tempoMarks) {
+        // 消した小節のテンポ変更は次の小節へ引き継ぐ（後ろにすでにあればそちらを優先）
+        const marks = this.score.tempoMarks;
+        for (const t of marks) if (t.measure > index) t.measure--;
+        const n = this.score.parts[0].measures.length;
+        this.score.tempoMarks = marks.filter((t, i) =>
+          t.measure >= 1 && t.measure < n && marks.map((u) => u.measure).lastIndexOf(t.measure) === i);
+      }
       const n = this.score.parts[0].measures.length;
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: Math.min(index, n - 1), eventIndex: 0 };
       this.selectedId = null;
     });
   }
 
-  updateMeta(meta: Partial<Pick<Score, 'title' | 'composer' | 'tempo'>>) {
+  updateMeta(meta: Partial<Pick<Score, 'title' | 'composer' | 'tempo' | 'tuning'>>) {
     this.mutate(() => Object.assign(this.score, meta));
   }
 
@@ -520,8 +550,16 @@ export class Editor {
 
   setTimeSignature(ts: TimeSignature) {
     this.mutate(() => {
+      const oldCap = measureCapacity(this.score.timeSignature);
       this.score.timeSignature = { ...ts };
       const cap = measureCapacity(ts);
+      // テンポ変更は、同じ時間位置を含む小節へ移す
+      if (this.score.tempoMarks) {
+        const seen = new Set<number>();
+        this.score.tempoMarks = this.score.tempoMarks
+          .map((t) => ({ ...t, measure: Math.floor((t.measure * oldCap) / cap) }))
+          .filter((t) => t.measure >= 1 && !seen.has(t.measure) && !!seen.add(t.measure));
+      }
       for (const p of this.score.parts) reflowPart(p, cap);
       equalizeMeasureCounts(this.score);
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: 0, eventIndex: 0 };
