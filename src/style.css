@@ -200,6 +200,12 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .oct:disabled { opacity: .3; }
 .dlg h3 { color: var(--muted); font-weight: 600; font-size: 13px !important; }
 .pb.soon { color: #9ca3af; padding-right: 40px; }
+/* 取り込みの案内 */
+#dlg-import-help p, .import-steps { font-size: 14px; line-height: 1.6; margin: 4px 0 8px; }
+.import-steps { padding-left: 1.4em; }
+.import-steps li { margin: 2px 0; }
+#dlg-import-help .muted { color: #6b7280; font-size: 13px; }
+.import-reason { background: #fef3c7; border-radius: 8px; padding: 8px 10px; }
 .keyboard {
   flex: 1; min-width: 0;
   position: relative; height: clamp(110px, 22vh, 190px);
@@ -233,10 +239,3 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   #btn-rewind, #btn-redo, #btn-sound { display: none; }
   .hint { max-width: calc(100% - 28px); bottom: 70px; }
 }
-
-/* 取り込みの案内 */
-#dlg-import-help p, .import-steps { font-size: 14px; line-height: 1.6; margin: 4px 0 8px; }
-.import-steps { padding-left: 1.4em; }
-.import-steps li { margin: 2px 0; }
-#dlg-import-help .muted { color: #6b7280; font-size: 13px; }
-.import-reason { background: #fef3c7; border-radius: 8px; padding: 8px 10px; }
