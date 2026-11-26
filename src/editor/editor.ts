@@ -7,7 +7,7 @@ import {
   Pitch, comparePitch, diatonicIndex, fromDiatonic, fromMidi, keyAlter, samePitch, STEPS, Step,
 } from '../model/pitch';
 import {
-  Clef, EventLocation, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
+  Clef, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
   eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
   TimeSignature,
 } from '../model/score';
@@ -206,9 +206,9 @@ export class Editor {
     this.inputPitches([p]);
   }
 
-  /** MIDI番号で入力（ステップ2の鍵盤から使う） */
-  inputMidi(midi: number) {
-    this.inputPitches([fromMidi(midi, this.score.keyFifths)]);
+  /** MIDI番号で入力（画面の鍵盤から使う）。chord なら選択中の音符に重ねる。 */
+  inputMidi(midi: number, chord = false) {
+    this.inputPitches([fromMidi(midi, this.score.keyFifths)], chord);
   }
 
   /** 音名キー（A〜G）で入力。直前の音にいちばん近いオクターブを選ぶ。 */
@@ -249,8 +249,8 @@ export class Editor {
   }
 
   /** 入力の中心。和音モードなら選択中の音符に重ね、そうでなければカーソル位置に上書きで置いて進む。 */
-  inputPitches(pitches: Pitch[]) {
-    if (this.chordMode && this.selected?.kind === 'note') {
+  inputPitches(pitches: Pitch[], chord = false) {
+    if ((chord || this.chordMode) && this.selected?.kind === 'note') {
       this.addToChord(pitches);
       return;
     }
@@ -269,7 +269,11 @@ export class Editor {
   }
 
   private placeAtCursor(pitches: Pitch[] | null) {
-    this.mutate(() => {
+    this.mutate(() => this.placeAtCursorRaw(pitches));
+  }
+
+  private placeAtCursorRaw(pitches: Pitch[] | null) {
+    {
       const cap = this.capacity;
       let { partIndex, measureIndex, eventIndex } = this.cursor;
       const part = this.score.parts[partIndex];
@@ -310,7 +314,7 @@ export class Editor {
       this.cursor = { partIndex, measureIndex, eventIndex };
       this.selectedId = firstId;
       this.selectedPitchIndex = 0;
-    });
+    }
   }
 
   private addToChord(pitches: Pitch[]) {
@@ -422,10 +426,26 @@ export class Editor {
     });
   }
 
+  /**
+   * タイ。入力モードで、直前に入れた音符の次にカーソルがあるときは、
+   * MuseScoreと同じく同じ高さの音符を今の音価で足してタイでつなぐ。それ以外は付け外しを切り替える。
+   */
   toggleTie() {
     const loc = this.selectedLocation;
     const ev = this.selected;
     if (!loc || !ev || ev.kind !== 'note') return;
+    if (this.mode === 'input' && !ev.tie && this.cursorFollows(loc)) {
+      this.mutate(() => {
+        const note = eventAt(this.score, loc) as NoteEvent;
+        const pitches = note.pitches.map((p) => ({ ...p }));
+        this.placeAtCursorRaw(pitches);
+        // 区切りを越えて分かれたときは、元の音符が別の位置に移っていないので id で取り直す
+        const again = findEvent(this.score, note.id);
+        const n = again ? (eventAt(this.score, again) as NoteEvent) : note;
+        n.tie = true;
+      });
+      return;
+    }
     this.mutate(() => {
       const note = eventAt(this.score, loc) as NoteEvent;
       if (note.tie) delete note.tie;
@@ -445,6 +465,15 @@ export class Editor {
       m.events.splice(j, 0, ev);
       this.cursor = { ...loc, eventIndex: j };
     });
+  }
+
+  /** カーソルが、loc の音符のすぐ次を指しているか */
+  private cursorFollows(loc: EventLocation): boolean {
+    const c = this.cursor;
+    if (c.partIndex !== loc.partIndex) return false;
+    const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
+    if (c.measureIndex === loc.measureIndex) return c.eventIndex === loc.eventIndex + 1;
+    return loc.eventIndex === m.events.length - 1 && c.measureIndex === loc.measureIndex + 1 && c.eventIndex === 0;
   }
 
   private chordTargets(note: NoteEvent): number[] {
@@ -513,6 +542,12 @@ export class Editor {
       this.score.parts.splice(index, 1);
       this.cursor = { partIndex: 0, measureIndex: this.cursor.measureIndex, eventIndex: 0 };
       this.selectedId = null;
+    });
+  }
+
+  setPartInstrument(index: number, instrument: Instrument) {
+    this.mutate(() => {
+      this.score.parts[index].instrument = instrument;
     });
   }
 

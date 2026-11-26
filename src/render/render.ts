@@ -326,7 +326,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
         new StaveConnector(top, bottom).setType('singleRight').setContext(ctx).draw();
         if (k === 0) {
           new StaveConnector(top, bottom).setType('singleLeft').setContext(ctx).draw();
-          const brace = score.parts.length === 2 && score.parts.every((p) => p.instrument === 'piano');
+          const brace = score.parts.length === 2 && score.parts[0].clef === 'treble' && score.parts[1].clef === 'bass';
           new StaveConnector(top, bottom).setType(brace ? 'brace' : 'bracket').setContext(ctx).draw();
         }
       }
