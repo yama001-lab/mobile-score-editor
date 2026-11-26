@@ -122,13 +122,13 @@ function showHint(text: string) {
 }
 
 let toastTimer = 0;
-function toast(text: string) {
+function toast(text: string, ms = 3500) {
   const t = $('#toast');
   t.textContent = text;
   t.hidden = false;
   $('#hint').classList.remove('show');
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (t.hidden = true), 3500);
+  toastTimer = window.setTimeout(() => (t.hidden = true), ms);
 }
 
 // ---------- 保存 ----------
@@ -430,13 +430,55 @@ function newScore(grand: boolean) {
 on('#btn-new-single', () => newScore(false));
 on('#btn-new-grand', () => newScore(true));
 on('#btn-export-pdf', () => { dlgList.close(); exportPdfNow(); });
-on('#btn-import-pdf', () => toast('PDF・画像の楽譜の取り込みは今後のステップで追加します（MusicXML経由で読み込む予定）。'));
+const dlgImportHelp = $<HTMLDialogElement>('#dlg-import-help');
+function openImportHelp(reason?: 'pdf' | 'image') {
+  const r = $('#import-help-reason');
+  r.hidden = !reason;
+  r.textContent = reason === 'pdf'
+    ? 'このPDFには楽譜データが入っていないため、そのままでは読み取れません。下の手順で MusicXML にしてから取り込んでください。'
+    : reason === 'image' ? '写真の楽譜はそのままでは読み取れません。下の手順で MusicXML にしてから取り込んでください。' : '';
+  dlgImportHelp.showModal();
+}
+on('#btn-import-help', () => openImportHelp());
+$<HTMLInputElement>('#file-import-score').addEventListener('change', async (e) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const { importFile } = await import('./import/index');
+    const r = await importFile(file);
+    if (r.kind === 'needs-omr') { dlgList.close(); openImportHelp(r.reason); return; }
+    r.score.id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    r.score.updatedAt = Date.now();
+    saveScore(r.score);
+    editor.load(r.score);
+    dlgList.close();
+    const what = r.source === 'pdf' ? 'PDFから楽譜を戻しました' : r.source === 'musicxml' ? 'MusicXMLを取り込みました' : '楽譜を開きました';
+    toast(r.warnings.length ? `${what}。注意：${r.warnings.join('／')}` : `${what}（${r.score.parts[0].measures.length}小節）`, r.warnings.length ? 9000 : 3500);
+  } catch (err) {
+    alert('取り込めませんでした: ' + (err as Error).message);
+  }
+});
+on('#btn-export-musicxml', async () => {
+  const { toMusicXml } = await import('./export/musicxml');
+  const blob = new Blob([toMusicXml(editor.score)], { type: 'application/vnd.recordare.musicxml+xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (editor.score.title || 'score').replace(/[\\/:*?"<>|]/g, '_') + '.musicxml';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+});
 on('#btn-export-json', () => {
   const blob = new Blob([JSON.stringify(editor.score, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = (editor.score.title || 'score') + '.json';
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 });
 $<HTMLInputElement>('#file-import').addEventListener('change', async (e) => {
