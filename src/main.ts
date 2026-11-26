@@ -8,6 +8,7 @@ import { ScheduledMark } from './audio/schedule';
 import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
 import { MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
+import { applyIcons, ICONS, setIcon } from './ui/icons';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -18,6 +19,7 @@ function initialScore(): Score {
   return s ?? createScore();
 }
 
+applyIcons();
 const editor = new Editor(initialScore());
 const scoreEl = $('#score');
 const wrap = $('#score-wrap');
@@ -61,19 +63,21 @@ function render() {
   focusInputPosition();
   drawPlayhead();
   updatePalette();
+  $('#zoom-label').textContent = Math.round(zoom * 100) + '%';
 }
 
-for (const durationsEl of [$('#durations'), $('#kb-durations')]) {
-  (['w', 'h', 'q', '8', '16'] as DurationType[]).forEach((d) => {
-    const b = document.createElement('button');
-    b.className = 'pb';
-    b.dataset.duration = d;
-    b.textContent = DURATION_LABELS[d];
-    b.title = `${DURATION_LABELS[d]}音符 (${({ w: 7, h: 6, q: 5, '8': 4, '16': 3 } as Record<string, number>)[d]})`;
-    b.addEventListener('click', () => editor.setInputDuration(d));
-    durationsEl.appendChild(b);
-  });
-}
+(['w', 'h', 'q', '8', '16'] as const).forEach((d) => {
+  const b = document.createElement('button');
+  b.className = 'tool';
+  b.dataset.duration = d;
+  b.innerHTML = ICONS[d];
+  const cap = document.createElement('span');
+  cap.textContent = d === 'w' ? '全音符' : `${DURATION_LABELS[d]}`;
+  b.appendChild(cap);
+  b.title = `${DURATION_LABELS[d]}音符 (${({ w: 7, h: 6, q: 5, '8': 4, '16': 3 } as Record<string, number>)[d]})`;
+  b.addEventListener('click', () => editor.setInputDuration(d));
+  $('#durations').appendChild(b);
+});
 
 function updatePalette() {
   document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
@@ -82,13 +86,12 @@ function updatePalette() {
     b.classList.toggle('on', b.dataset.duration === editor.inputDuration));
   const sel = editor.selected;
   const isNote = sel?.kind === 'note';
-  for (const b of ['#btn-dot', '[data-act="dot"]']) $(b).classList.toggle('on', editor.inputDots > 0);
-  for (const b of ['#btn-chord', '[data-act="chord"]']) $(b).classList.toggle('on', editor.chordMode);
-  for (const b of ['#btn-tie', '[data-act="tie"]']) {
-    $(b).classList.toggle('on', !!(isNote && sel.tie));
-    ($(b) as HTMLButtonElement).disabled = !isNote;
-  }
-  ($('[data-act="back"]') as HTMLButtonElement).disabled = !editor.canUndo;
+  $('#btn-dot').classList.toggle('on', editor.inputDots > 0);
+  $('#btn-chord').classList.toggle('on', editor.chordMode);
+  // 入力モードのタイは「直前の音とタイでつないで足す」なので、選択がなくても押せる
+  $('#btn-tie').classList.toggle('on', !!(isNote && sel.tie));
+  ($('#btn-tie') as HTMLButtonElement).disabled = !isNote && editor.mode !== 'input';
+  ($('#btn-back') as HTMLButtonElement).disabled = !editor.canUndo;
   for (const id of ['#btn-up', '#btn-down']) ($(id) as HTMLButtonElement).disabled = !isNote;
   document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) => (b.disabled = !isNote));
   for (const id of ['#btn-left', '#btn-right', '#btn-delete']) ($(id) as HTMLButtonElement).disabled = !sel;
@@ -97,11 +100,35 @@ function updatePalette() {
   scoreEl.classList.toggle('input-mode', editor.mode === 'input');
   const title = $<HTMLInputElement>('#title');
   if (document.activeElement !== title) title.value = editor.score.title;
-  $('#hint').textContent = editor.mode === 'input'
-    ? (panelShown()
-      ? '入力モード：下の鍵盤を押すと、カーソル（青い帯）の位置に音符が入ります。鍵を押さえたまま別の鍵を押すと和音になります。五線をタップして入れることもできます。'
-      : '入力モード：五線をタップすると、その位置に音符が入ります。音の長さは上のボタンで選びます。')
-    : '選択モード：音符をタップして選び、上下にドラッグすると音の高さが変わります。';
+  const hintKey = `${editor.mode}:${panelShown()}`;
+  if (hintKey !== lastHintKey) {
+    lastHintKey = hintKey;
+    showHint(editor.mode === 'input'
+      ? (panelShown()
+        ? '入力：鍵盤を押すと青い帯の位置に入ります。押さえたまま別の鍵で和音。五線のタップでも入ります'
+        : '入力：五線をタップすると、その高さの音符が入ります')
+      : '選択：音符をタップして選び、上下にドラッグで高さを変えます');
+  }
+}
+
+let lastHintKey = '';
+let hintTimer = 0;
+function showHint(text: string) {
+  const h = $('#hint');
+  h.textContent = text;
+  h.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => h.classList.remove('show'), 3500);
+}
+
+let toastTimer = 0;
+function toast(text: string) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.hidden = false;
+  $('#hint').classList.remove('show');
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (t.hidden = true), 3500);
 }
 
 // ---------- 保存 ----------
@@ -234,18 +261,19 @@ scoreEl.addEventListener('pointercancel', (ev) => endPointer(ev, true));
 
 const on = (sel: string, fn: () => void) => $(sel).addEventListener('click', fn);
 document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
-  b.addEventListener('click', () => editor.setMode(b.dataset.mode as 'select' | 'input')));
+  b.addEventListener('click', () => {
+    const m = b.dataset.mode;
+    // 手書き（ステップ3）はまだ無いので、案内だけ出す
+    if (m === 'pen') { toast('手書き入力は次のステップで追加します。ペンで五線に書いた音符を読み取れるようになります。'); return; }
+    editor.setMode(m as 'select' | 'input');
+  }));
 document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) =>
   b.addEventListener('click', () => editor.setSelectedAccidental(Number(b.dataset.alter))));
 on('#btn-dot', () => editor.toggleDot());
 on('#btn-rest', () => editor.inputRest());
 on('#btn-tie', () => { editor.toggleTie(); previewSelected(); });
 on('#btn-chord', () => editor.toggleChordMode());
-on('[data-act="dot"]', () => editor.toggleDot());
-on('[data-act="rest"]', () => { if (editor.mode !== 'input') editor.setMode('input'); editor.inputRest(); });
-on('[data-act="tie"]', () => { if (editor.mode !== 'input') editor.setMode('input'); editor.toggleTie(); previewSelected(); });
-on('[data-act="chord"]', () => editor.toggleChordMode());
-on('[data-act="back"]', () => editor.undo());
+on('#btn-back', () => editor.undo());
 on('#btn-up', () => editor.transposeSelected(1));
 on('#btn-down', () => editor.transposeSelected(-1));
 on('#btn-left', () => editor.shiftSelected(-1));
@@ -253,24 +281,56 @@ on('#btn-right', () => editor.shiftSelected(1));
 on('#btn-delete', () => editor.deleteSelected());
 on('#btn-undo', () => editor.undo());
 on('#btn-redo', () => editor.redo());
-on('#btn-add-measure', () => editor.addMeasure());
-on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-zoom-in', () => setZoom(zoom * 1.15));
 on('#btn-zoom-out', () => setZoom(zoom / 1.15));
-on('#btn-pdf', async () => {
-  const b = $<HTMLButtonElement>('#btn-pdf');
-  b.disabled = true;
-  b.textContent = '作成中…';
+on('#zoom-label', () => setZoom(1));
+
+let exporting = false;
+async function exportPdfNow() {
+  if (exporting) return;
+  exporting = true;
+  const label = $('#btn-pdf span');
+  label.textContent = '作成中…';
   try {
     const { exportPdf } = await import('./export/pdf');
     await exportPdf(editor.score);
   } catch (e) {
     alert('PDFを作れませんでした: ' + (e as Error).message);
   } finally {
-    b.disabled = false;
-    b.textContent = 'PDF';
+    exporting = false;
+    label.textContent = 'PDF';
   }
+}
+on('#btn-pdf', exportPdfNow);
+
+// ---------- 小節メニュー ----------
+
+const measureMenu = $('#measure-menu');
+function closeMenu() { measureMenu.hidden = true; }
+on('#btn-measure-menu', () => {
+  if (!measureMenu.hidden) { closeMenu(); return; }
+  measureMenu.hidden = false;
+  const r = $('#btn-measure-menu').getBoundingClientRect();
+  const m = measureMenu.getBoundingClientRect();
+  measureMenu.style.left = Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8)) + 'px';
+  measureMenu.style.top = Math.max(8, r.top - m.height - 8) + 'px';
 });
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target as HTMLElement;
+  if (!measureMenu.hidden && !t.closest('#measure-menu, #btn-measure-menu')) closeMenu();
+}, { capture: true });
+measureMenu.addEventListener('click', () => closeMenu());
+on('#btn-add-measure', () => editor.addMeasure());
+on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1));
+on('#btn-remove-measure', () => editor.removeMeasure());
+on('#btn-meter', () => openSettings());
+
+// 道具バーが右に続いていることを示すぼかしは、端までスクロールしたら消す
+const paletteEl = $('#palette');
+function updatePaletteFade() {
+  paletteEl.classList.toggle('at-end', paletteEl.scrollLeft + paletteEl.clientWidth >= paletteEl.scrollWidth - 2);
+}
+paletteEl.addEventListener('scroll', updatePaletteFade, { passive: true });
 
 function setZoom(z: number) {
   zoom = Math.min(2.5, Math.max(0.5, z));
@@ -369,6 +429,8 @@ function newScore(grand: boolean) {
 }
 on('#btn-new-single', () => newScore(false));
 on('#btn-new-grand', () => newScore(true));
+on('#btn-export-pdf', () => { dlgList.close(); exportPdfNow(); });
+on('#btn-import-pdf', () => toast('PDF・画像の楽譜の取り込みは今後のステップで追加します（MusicXML経由で読み込む予定）。'));
 on('#btn-export-json', () => {
   const blob = new Blob([JSON.stringify(editor.score, null, 1)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -434,7 +496,7 @@ function renderPartList() {
   });
 }
 
-on('#btn-settings', () => {
+function openSettings() {
   const s = editor.score;
   $<HTMLInputElement>('#set-title').value = s.title;
   $<HTMLInputElement>('#set-composer').value = s.composer;
@@ -446,7 +508,8 @@ on('#btn-settings', () => {
   pendingClefs = s.parts.map((p) => ({ clef: p.clef, instrument: p.instrument, remove: false, isNew: false }));
   renderPartList();
   dlgSet.showModal();
-});
+}
+on('#btn-settings', openSettings);
 on('#btn-add-treble', () => { pendingClefs.push({ clef: 'treble', instrument: 'piano', remove: false, isNew: true }); renderPartList(); });
 on('#btn-add-bass', () => { pendingClefs.push({ clef: 'bass', instrument: 'piano', remove: false, isNew: true }); renderPartList(); });
 
@@ -488,11 +551,11 @@ dlgSet.addEventListener('close', () => {
 
 let soundOn = safeGet('score-editor:sound') !== '0';
 function updateSoundButton() {
-  const b = $('#kb-sound');
-  b.textContent = soundOn ? '🔊' : '🔇';
-  b.classList.toggle('on', soundOn);
+  const b = $('#btn-sound');
+  setIcon(b, soundOn ? 'soundOn' : 'soundOff');
+  b.title = soundOn ? '確認音：オン（タップで消す）' : '確認音：オフ（タップで鳴らす）';
 }
-on('#kb-sound', () => { soundOn = !soundOn; safeSet('score-editor:sound', soundOn ? '1' : '0'); updateSoundButton(); });
+on('#btn-sound', () => { soundOn = !soundOn; safeSet('score-editor:sound', soundOn ? '1' : '0'); updateSoundButton(); });
 updateSoundButton();
 
 const currentInstrument = () => editor.score.parts[editor.cursor.partIndex]?.instrument ?? 'piano';
@@ -533,7 +596,9 @@ const keyboard = new PianoKeyboard($('#keyboard'), {
 }, Number(safeGet('score-editor:kb-octave')) || 3);
 
 function updateRange() {
-  $('#kb-range').textContent = keyboard.rangeLabel();
+  const range = keyboard.rangeLabel();
+  $('#kb-oct-down').title = `1オクターブ下へ（いま ${range}）`;
+  $('#kb-oct-up').title = `1オクターブ上へ（いま ${range}）`;
   safeSet('score-editor:kb-octave', String(keyboard.startOctave));
 }
 function setPanel(show: boolean) {
@@ -542,6 +607,7 @@ function setPanel(show: boolean) {
   safeSet('score-editor:keyboard', show ? '1' : '0');
   if (show) { keyboard.layout(); updateRange(); }
   requestRender();
+  updatePaletteFade();
   // 鍵盤で隠れた入力位置を見えるようにする
   requestAnimationFrame(() => requestAnimationFrame(() => focusInputPosition(true)));
 }
@@ -592,7 +658,8 @@ function litKeys() {
 
 function updatePlayButton() {
   const b = $('#btn-play');
-  b.textContent = player.playing ? '■ 停止' : '▶ 再生';
+  setIcon(b, player.playing ? 'stop' : 'play');
+  $('#btn-play span').textContent = player.playing ? '停止' : '再生';
   b.classList.toggle('on', player.playing);
 }
 
@@ -734,6 +801,7 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 window.addEventListener('resize', () => {
   if (panelShown()) { keyboard.layout(); updateRange(); }
   requestRender();
+  updatePaletteFade();
 });
 // 初めての人には鍵盤を出しておく
 setPanel(safeGet('score-editor:keyboard') !== '0');

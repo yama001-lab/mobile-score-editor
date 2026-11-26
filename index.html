@@ -14,95 +14,113 @@
   <title>楽譜エディタ</title>
 </head>
 <body>
+  <!-- 上：ファイル・曲名・再生・元に戻す・設定（アプリ全体の操作） -->
   <header class="topbar">
-    <button id="btn-list" class="tb" title="楽譜一覧">☰ 一覧</button>
-    <input id="title" class="title-input" aria-label="曲名" />
-    <span id="save-status" class="status"></span>
-    <span class="spacer"></span>
-    <button id="btn-rewind" class="tb" title="先頭へ戻る">⏮</button>
-    <button id="btn-play" class="tb play" title="カーソルのある小節から再生／停止 (スペース)">▶ 再生</button>
-    <button id="btn-keyboard" class="tb" title="画面の鍵盤を表示／非表示">🎹 鍵盤</button>
-    <button id="btn-undo" class="tb" title="元に戻す (Ctrl+Z)">↶</button>
-    <button id="btn-redo" class="tb" title="やり直し (Ctrl+Y)">↷</button>
-    <button id="btn-settings" class="tb" title="楽譜の設定">⚙ 設定</button>
-    <button id="btn-pdf" class="tb primary" title="PDFに書き出す">PDF</button>
+    <button id="btn-list" class="tb icon-only" data-icon="menu" title="ファイル（楽譜一覧・新規・読み込み・書き出し）" aria-label="ファイル"></button>
+    <div class="title-box">
+      <input id="title" class="title-input" aria-label="曲名" />
+      <span id="save-status" class="status"></span>
+    </div>
+    <div class="transport">
+      <button id="btn-rewind" class="tb icon-only" data-icon="rewind" title="先頭へ戻る" aria-label="先頭へ戻る"></button>
+      <button id="btn-play" class="tb play" data-icon="play" title="カーソルのある小節から再生／停止 (スペース)"><span>再生</span></button>
+      <button id="btn-sound" class="tb icon-only" data-icon="soundOn" title="鍵盤や入力の音を鳴らす" aria-label="確認音"></button>
+    </div>
+    <div class="tb-right">
+      <button id="btn-undo" class="tb icon-only" data-icon="undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す"></button>
+      <button id="btn-redo" class="tb icon-only" data-icon="redo" title="やり直し (Ctrl+Y)" aria-label="やり直し"></button>
+      <button id="btn-settings" class="tb icon-only" data-icon="settings" title="楽譜の設定（曲名・拍子・調号・譜表・チューニング）" aria-label="設定"></button>
+      <button id="btn-pdf" class="tb primary" data-icon="share" title="PDFに書き出す"><span>PDF</span></button>
+    </div>
   </header>
 
-  <nav class="palette" id="palette">
-    <div class="group">
-      <button data-mode="select" class="pb" title="選択モード (Esc)">選択</button>
-      <button data-mode="input" class="pb" title="入力モード (N)">✎ 入力</button>
+  <!-- 真ん中：楽譜 -->
+  <main id="stage">
+    <div id="score-wrap">
+      <div id="score" class="score"></div>
     </div>
-    <div class="group" id="durations"></div>
-    <div class="group">
-      <button id="btn-dot" class="pb" title="付点 (.)">付点</button>
-      <button id="btn-rest" class="pb" title="休符を入れる (0)">休符</button>
-      <button id="btn-tie" class="pb" title="タイ (T)">タイ</button>
-      <button id="btn-chord" class="pb" title="和音モード：選択中の音に重ねる (Shift)">和音</button>
+    <p class="hint" id="hint" role="status"></p>
+    <div class="zoom" aria-label="表示の大きさ">
+      <button id="btn-zoom-out" class="zb" data-icon="zoomOut" title="縮小" aria-label="縮小"></button>
+      <button id="zoom-label" class="zb label" title="100%に戻す">100%</button>
+      <button id="btn-zoom-in" class="zb" data-icon="zoomIn" title="拡大" aria-label="拡大"></button>
     </div>
-    <div class="group">
-      <button data-alter="1" class="pb" title="シャープ">♯</button>
-      <button data-alter="-1" class="pb" title="フラット">♭</button>
-      <button data-alter="0" class="pb" title="ナチュラル">♮</button>
-    </div>
-    <div class="group">
-      <button id="btn-up" class="pb" title="音を上げる (↑)">▲</button>
-      <button id="btn-down" class="pb" title="音を下げる (↓)">▼</button>
-      <button id="btn-left" class="pb" title="前の音と入れ替え">◀</button>
-      <button id="btn-right" class="pb" title="次の音と入れ替え">▶</button>
-      <button id="btn-delete" class="pb danger" title="削除 (Delete)">削除</button>
-    </div>
-    <div class="group">
-      <button id="btn-add-measure" class="pb" title="小節を追加">＋小節</button>
-      <button id="btn-remove-measure" class="pb" title="カーソルのある小節を削除">−小節</button>
-      <button id="btn-tempo" class="pb" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）">♩= テンポ</button>
-      <button id="btn-zoom-out" class="pb" title="縮小">−</button>
-      <button id="btn-zoom-in" class="pb" title="拡大">＋</button>
-    </div>
-  </nav>
-
-  <main id="score-wrap">
-    <div id="score" class="score"></div>
-    <p class="hint" id="hint"></p>
+    <div id="toast" class="toast" role="status" hidden></div>
   </main>
 
-  <!-- 画面の鍵盤（ステップ3で手書き入力の面もここに置く） -->
-  <section id="input-panel" hidden>
-    <div class="kb-bar">
-      <div class="group" id="kb-durations"></div>
-      <div class="group">
-        <button data-act="dot" class="pb" title="付点">付点</button>
-        <button data-act="rest" class="pb" title="休符を入れる">休符</button>
+  <!-- 下：道具（手の届く位置）。左は入力方法、右はスクロールできるパレット -->
+  <footer id="dock">
+    <div class="toolbar">
+      <div class="modes">
+        <div class="seg" role="radiogroup" aria-label="モード">
+          <button data-mode="select" class="seg-b" data-icon="select" title="選択モード：音符を選んで直す (Esc)"><span>選択</span></button>
+          <button data-mode="input" class="seg-b" data-icon="input" title="入力モード：五線をタップ、または鍵盤で入れる (N)"><span>入力</span></button>
+          <button data-mode="pen" class="seg-b soon" data-icon="pen" title="手書きモード：ペンで五線に書いた音符を読み取る（次のステップで追加）"><span>手書き</span></button>
+        </div>
+        <button id="btn-keyboard" class="tool" data-icon="keyboard" title="画面の鍵盤を表示／非表示"><span>鍵盤</span></button>
       </div>
-      <div class="group">
-        <button data-act="chord" class="pb" title="和音モード：押した鍵を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音になります）">和音</button>
-        <button data-act="tie" class="pb" title="タイ：直前の音と同じ高さの音をタイでつないで足す">タイ</button>
-        <button data-act="back" class="pb" title="直前の入力を取り消す">⌫</button>
-      </div>
-      <span class="spacer"></span>
-      <div class="group">
-        <button id="kb-oct-down" class="pb" title="1オクターブ下へ">◀</button>
-        <span id="kb-range" class="kb-range"></span>
-        <button id="kb-oct-up" class="pb" title="1オクターブ上へ">▶</button>
-      </div>
-      <div class="group">
-        <button id="kb-sound" class="pb" title="鍵盤や入力の音を鳴らす">🔊</button>
+      <div class="palette-scroll" id="palette">
+        <div class="group" id="durations" aria-label="音の長さ"></div>
+        <div class="group">
+          <button id="btn-dot" class="tool" data-icon="dot" title="付点 (.)"><span>付点</span></button>
+          <button id="btn-rest" class="tool" data-icon="rest" title="休符を入れる (0)"><span>休符</span></button>
+          <button id="btn-tie" class="tool" data-icon="tie" title="タイ (T)。入力モードでは直前の音と同じ高さの音をタイでつないで足す"><span>タイ</span></button>
+          <button id="btn-chord" class="tool" data-icon="chord" title="和音：入れる音を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音）"><span>和音</span></button>
+          <button id="btn-back" class="tool" data-icon="back" title="直前の操作を取り消す"><span>戻す</span></button>
+        </div>
+        <div class="group" aria-label="臨時記号">
+          <button data-alter="1" class="tool acc" title="シャープ (+)"><b>♯</b><span>シャープ</span></button>
+          <button data-alter="-1" class="tool acc" title="フラット (-)"><b>♭</b><span>フラット</span></button>
+          <button data-alter="0" class="tool acc" title="ナチュラル (=)"><b>♮</b><span>ナチュラル</span></button>
+        </div>
+        <div class="group" aria-label="選んだ音符の編集">
+          <button id="btn-up" class="tool" data-icon="up" title="音を上げる (↑)"><span>上へ</span></button>
+          <button id="btn-down" class="tool" data-icon="down" title="音を下げる (↓)"><span>下へ</span></button>
+          <button id="btn-left" class="tool" data-icon="left" title="前の音と入れ替え"><span>前と</span></button>
+          <button id="btn-right" class="tool" data-icon="right" title="次の音と入れ替え"><span>次と</span></button>
+          <button id="btn-delete" class="tool danger" data-icon="trash" title="削除 (Delete)"><span>削除</span></button>
+        </div>
+        <div class="group">
+          <button id="btn-tempo" class="tool" data-icon="tempo" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）"><span>テンポ</span></button>
+          <button id="btn-measure-menu" class="tool" data-icon="measure" title="小節の追加・削除" aria-haspopup="menu"><span>小節</span></button>
+        </div>
       </div>
     </div>
-    <div id="keyboard" class="keyboard" aria-label="鍵盤"></div>
-  </section>
+
+    <!-- 入力パネル：鍵盤（ステップ3の手書きは楽譜の上に直接書くので、ここには道具だけ足す想定） -->
+    <section id="input-panel" hidden>
+      <button id="kb-oct-down" class="oct" data-icon="left" title="1オクターブ下へ" aria-label="1オクターブ下へ"></button>
+      <div id="keyboard" class="keyboard" aria-label="鍵盤"></div>
+      <button id="kb-oct-up" class="oct" data-icon="right" title="1オクターブ上へ" aria-label="1オクターブ上へ"></button>
+    </section>
+  </footer>
+
+  <div id="measure-menu" class="menu" role="menu" hidden>
+    <button role="menuitem" id="btn-add-measure">小節を最後に追加</button>
+    <button role="menuitem" id="btn-insert-measure">カーソルの前に小節を挿入</button>
+    <button role="menuitem" id="btn-remove-measure" class="danger">カーソルのある小節を削除</button>
+    <hr />
+    <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
+  </div>
 
   <dialog id="dlg-list">
     <form method="dialog" class="dlg">
-      <h2>楽譜一覧</h2>
+      <h2>ファイル</h2>
       <div class="row">
         <button type="button" id="btn-new-single" class="pb">＋ 新規（ト音記号）</button>
         <button type="button" id="btn-new-grand" class="pb">＋ 新規（ピアノ大譜表）</button>
       </div>
+      <h3>保存した楽譜</h3>
       <ul id="score-list" class="score-list"></ul>
+      <h3>読み込み</h3>
       <div class="row">
-        <button type="button" id="btn-export-json" class="pb">この楽譜をファイルに保存</button>
-        <label class="pb file-label">ファイルから読み込む<input type="file" id="file-import" accept=".json,application/json" hidden /></label>
+        <label class="pb file-label">楽譜ファイル（.json）を開く<input type="file" id="file-import" accept=".json,application/json" hidden /></label>
+        <button type="button" id="btn-import-pdf" class="pb soon" title="PDFや写真の楽譜を読み取って取り込む（今後のステップで追加）">PDF・画像の楽譜を取り込む<small>準備中</small></button>
+      </div>
+      <h3>書き出し</h3>
+      <div class="row">
+        <button type="button" id="btn-export-pdf" class="pb">PDFに書き出す</button>
+        <button type="button" id="btn-export-json" class="pb">楽譜ファイル（.json）に保存</button>
       </div>
       <div class="row end"><button class="pb">閉じる</button></div>
     </form>
