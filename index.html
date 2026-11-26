@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#1f2937" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="楽譜" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./icon-180.png" />
+  <title>楽譜エディタ</title>
+</head>
+<body>
+  <header class="topbar">
+    <button id="btn-list" class="tb" title="楽譜一覧">☰ 一覧</button>
+    <input id="title" class="title-input" aria-label="曲名" />
+    <span id="save-status" class="status"></span>
+    <span class="spacer"></span>
+    <button id="btn-undo" class="tb" title="元に戻す (Ctrl+Z)">↶</button>
+    <button id="btn-redo" class="tb" title="やり直し (Ctrl+Y)">↷</button>
+    <button id="btn-settings" class="tb" title="楽譜の設定">⚙ 設定</button>
+    <button id="btn-pdf" class="tb primary" title="PDFに書き出す">PDF</button>
+  </header>
+
+  <nav class="palette" id="palette">
+    <div class="group">
+      <button data-mode="select" class="pb" title="選択モード (Esc)">選択</button>
+      <button data-mode="input" class="pb" title="入力モード (N)">✎ 入力</button>
+    </div>
+    <div class="group" id="durations"></div>
+    <div class="group">
+      <button id="btn-dot" class="pb" title="付点 (.)">付点</button>
+      <button id="btn-rest" class="pb" title="休符を入れる (0)">休符</button>
+      <button id="btn-tie" class="pb" title="タイ (T)">タイ</button>
+      <button id="btn-chord" class="pb" title="和音モード：選択中の音に重ねる (Shift)">和音</button>
+    </div>
+    <div class="group">
+      <button data-alter="1" class="pb" title="シャープ">♯</button>
+      <button data-alter="-1" class="pb" title="フラット">♭</button>
+      <button data-alter="0" class="pb" title="ナチュラル">♮</button>
+    </div>
+    <div class="group">
+      <button id="btn-up" class="pb" title="音を上げる (↑)">▲</button>
+      <button id="btn-down" class="pb" title="音を下げる (↓)">▼</button>
+      <button id="btn-left" class="pb" title="前の音と入れ替え">◀</button>
+      <button id="btn-right" class="pb" title="次の音と入れ替え">▶</button>
+      <button id="btn-delete" class="pb danger" title="削除 (Delete)">削除</button>
+    </div>
+    <div class="group">
+      <button id="btn-add-measure" class="pb" title="小節を追加">＋小節</button>
+      <button id="btn-remove-measure" class="pb" title="カーソルのある小節を削除">−小節</button>
+      <button id="btn-zoom-out" class="pb" title="縮小">−</button>
+      <button id="btn-zoom-in" class="pb" title="拡大">＋</button>
+    </div>
+  </nav>
+
+  <main id="score-wrap">
+    <div id="score" class="score"></div>
+    <p class="hint" id="hint"></p>
+  </main>
+
+  <!-- ステップ2で画面鍵盤、ステップ3で手書き入力の面をここに置く -->
+  <section id="input-panel" hidden></section>
+
+  <dialog id="dlg-list">
+    <form method="dialog" class="dlg">
+      <h2>楽譜一覧</h2>
+      <div class="row">
+        <button type="button" id="btn-new-single" class="pb">＋ 新規（ト音記号）</button>
+        <button type="button" id="btn-new-grand" class="pb">＋ 新規（ピアノ大譜表）</button>
+      </div>
+      <ul id="score-list" class="score-list"></ul>
+      <div class="row">
+        <button type="button" id="btn-export-json" class="pb">この楽譜をファイルに保存</button>
+        <label class="pb file-label">ファイルから読み込む<input type="file" id="file-import" accept=".json,application/json" hidden /></label>
+      </div>
+      <div class="row end"><button class="pb">閉じる</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-settings">
+    <form method="dialog" class="dlg">
+      <h2>楽譜の設定</h2>
+      <label>曲名 <input id="set-title" /></label>
+      <label>作曲者 <input id="set-composer" /></label>
+      <label>テンポ（♩=） <input id="set-tempo" type="number" min="20" max="300" /></label>
+      <div class="row">
+        <label>拍子
+          <select id="set-beats"></select> /
+          <select id="set-beattype"><option>2</option><option>4</option><option>8</option></select>
+        </label>
+        <label>調号 <select id="set-key"></select></label>
+      </div>
+      <h3>譜表</h3>
+      <ul id="part-list" class="part-list"></ul>
+      <div class="row">
+        <button type="button" id="btn-add-treble" class="pb">＋ ト音譜表</button>
+        <button type="button" id="btn-add-bass" class="pb">＋ ヘ音譜表</button>
+      </div>
+      <div class="row end">
+        <button value="cancel" class="pb">キャンセル</button>
+        <button value="ok" id="btn-settings-ok" class="pb primary">適用</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
