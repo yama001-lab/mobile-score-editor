@@ -111,7 +111,7 @@ describe('コピー・貼り付け', () => {
     const e = cdef();
     e.selectRange(idAt(e, 0, 1), idAt(e, 0, 2));
     e.cut();
-    expect(measure(e, 0)).toEqual(['C4q', 'rh', 'F4q']);
+    expect(measure(e, 0)).toEqual(['C4q', 'rq', 'rq', 'F4q']);
     e.undo();
     expect(measure(e, 0)).toEqual(['C4q', 'D4q', 'E4q', 'F4q']);
     expect(e.range).toBeNull();

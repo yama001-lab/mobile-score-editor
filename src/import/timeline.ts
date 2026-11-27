@@ -4,7 +4,7 @@
  */
 import { DurationType, decompose, ticksOf } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { EventMarks, EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { CapacityOf, EventMarks, EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 /** 連符の一員であること（同じ key の続いた音が1つの連符） */
 export interface TimedTuplet {
@@ -45,10 +45,33 @@ export interface BuildResult {
   droppedOverlap: boolean;
 }
 
+/** 小節の長さが小節ごとに違ってもよい、ティック → 小節番号の対応 */
+export class Bars {
+  private ends: number[] = [];
+  constructor(private capacity: CapacityOf) {}
+  cap(i: number) {
+    return typeof this.capacity === 'number' ? this.capacity : this.capacity(i);
+  }
+  /** i 小節目の終わりのティック */
+  end(i: number) {
+    while (this.ends.length <= i) this.ends.push((this.ends[this.ends.length - 1] ?? 0) + this.cap(this.ends.length));
+    return this.ends[i];
+  }
+  start(i: number) {
+    return i === 0 ? 0 : this.end(i - 1);
+  }
+  /** tick を含む小節の番号 */
+  indexAt(tick: number) {
+    let i = 0;
+    while (this.end(i) <= tick) i++;
+    return i;
+  }
+}
+
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
 
 /** 連符としてそのまま置けるか（長さが整数ティックで、すき間なく続き、1小節に収まる） */
-function validTuplet(group: TimedEvent[], capacity: number): boolean {
+function validTuplet(group: TimedEvent[], bars: Bars): boolean {
   const start = group[0].start;
   if (!near(start, Math.round(start)) || (!near(start % GRID, 0) && !near(start % GRID, GRID))) return false;
   let t = start;
@@ -60,10 +83,11 @@ function validTuplet(group: TimedEvent[], capacity: number): boolean {
   }
   const s = Math.round(start);
   const end = Math.round(t);
-  return Math.floor(s / capacity) === Math.floor((end - 1) / capacity);
+  return bars.indexAt(s) === bars.indexAt(end - 1);
 }
 
-export function buildMeasures(events: TimedEvent[], capacity: number, minMeasures = 1): BuildResult {
+export function buildMeasures(events: TimedEvent[], capacity: CapacityOf, minMeasures = 1): BuildResult {
+  const bars = new Bars(capacity);
   let quantized = false;
   let droppedOverlap = false;
 
@@ -76,7 +100,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
     let e = i + 1;
     while (e < events.length && events[e].tuplet?.key === key) e++;
     const g = events.slice(i, e);
-    if (validTuplet(g, capacity)) groups.push(g.map((x) => ({ ...x, start: Math.round(x.start), ticks: Math.round(x.ticks), orig: x })));
+    if (validTuplet(g, bars)) groups.push(g.map((x) => ({ ...x, start: Math.round(x.start), ticks: Math.round(x.ticks), orig: x })));
     else singles.push(...g.map((x) => ({ ...x, tuplet: undefined })));
     i = e - 1;
   }
@@ -96,8 +120,8 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
 
   const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean, src?: TimedEvent) => {
     while (len > 0) {
-      const mi = Math.floor(cursor / capacity);
-      const room = (mi + 1) * capacity - cursor;
+      const mi = bars.indexAt(cursor);
+      const room = bars.end(mi) - cursor;
       const take = Math.min(room, len);
       const pieces = decompose(take);
       (buckets[mi] ??= []);
@@ -141,7 +165,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
         if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
         if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
         if (src.texts) copyTexts(src.texts, ev);
-        (buckets[Math.floor(cursor / capacity)] ??= []).push(ev);
+        (buckets[bars.indexAt(cursor)] ??= []).push(ev);
         cursor += e.ticks;
       }
       continue;
@@ -160,13 +184,13 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
     emit(ticks, e.pitches, e.pitches ? e.tie : false, e.orig);
   }
 
-  const count = Math.max(minMeasures, Math.ceil(cursor / capacity), 1);
-  if (cursor < count * capacity) emit(count * capacity - cursor, null, false);
+  const count = Math.max(minMeasures, cursor > 0 ? bars.indexAt(cursor - 1) + 1 : 1, 1);
+  if (cursor < bars.end(count - 1)) emit(bars.end(count - 1) - cursor, null, false);
 
   const measures: Measure[] = [];
   for (let i = 0; i < count; i++) {
     const m: Measure = { id: uid(), events: buckets[i] ?? [] };
-    normalizeMeasure(m, capacity);
+    normalizeMeasure(m, bars.cap(i));
     measures.push(m);
   }
   return { measures, quantized, droppedOverlap };

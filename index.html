@@ -112,7 +112,8 @@
     <button role="menuitem" id="btn-select-measure">カーソルのある小節を範囲選択</button>
     <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
-    <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
+    <button role="menuitem" id="btn-measure-marks">リピート・途中の調や拍子・弱起…</button>
+    <button role="menuitem" id="btn-meter">曲全体の拍子・調号…</button>
   </div>
 
   <div id="tuplet-menu" class="menu" role="menu" hidden>
@@ -183,6 +184,48 @@
       <div class="row end">
         <button type="button" id="btn-tempo-remove" class="pb danger">この変更を消す</button>
         <span class="spacer"></span>
+        <button value="cancel" class="pb">キャンセル</button>
+        <button value="ok" class="pb primary">決定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-measure">
+    <form method="dialog" class="dlg">
+      <h2 id="measure-heading">小節の記号</h2>
+      <h3>リピート</h3>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-repeat-start" /> 小節の頭に |:（ここから繰り返す）</label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-repeat-end" /> 小節の終わりに :|（ここで戻る）</label>
+        <label id="mk-times-wrap">全部で <select id="mk-times"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select> 回</label>
+      </div>
+      <label>番号付きカッコ（1番・2番）
+        <select id="mk-volta">
+          <option value="">なし</option>
+          <option value="1">1.（1回目だけ弾く）</option>
+          <option value="2">2.（2回目だけ弾く）</option>
+          <option value="3">3.</option>
+          <option value="1,2">1. 2.</option>
+        </select>
+      </label>
+      <p class="note">カッコは続く小節に同じ番号を付けると1つにつながります。1番カッコの最後の小節に「:|」を付けてください。</p>
+      <h3>この小節から変える</h3>
+      <div class="row">
+        <label>拍子
+          <select id="mk-beats"><option value="">変えない</option></select> /
+          <select id="mk-beattype"><option>2</option><option>4</option><option>8</option></select>
+        </label>
+        <label>調号 <select id="mk-key"><option value="">変えない</option></select></label>
+      </div>
+      <p class="note">拍子を変えると、次の拍子変更の手前まで音符が新しい小節の長さに並べ直されます。調号を変えても音の高さはそのままです。</p>
+      <div id="mk-pickup-wrap">
+        <h3>弱起（アウフタクト）</h3>
+        <label>1小節目の長さ <select id="mk-pickup"><option value="0">普通の1小節</option></select></label>
+        <p class="note">短くすると、1小節目の前の方が休符だけなら後ろの音を残します。</p>
+      </div>
+      <div class="row end">
         <button value="cancel" class="pb">キャンセル</button>
         <button value="ok" class="pb primary">決定</button>
       </div>

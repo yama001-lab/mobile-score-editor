@@ -1,7 +1,7 @@
 /** 楽譜を「いつ・どの高さを・どれだけ鳴らすか」の一覧にする。音は出さないので単体テストできる。 */
 import { PPQ } from '../model/duration';
 import { toMidi } from '../model/pitch';
-import { Instrument, Score, eventTicks, measureCapacity, tempoAt } from '../model/score';
+import { Instrument, Score, capacityAt, eventTicks, playOrder, tempoAt } from '../model/score';
 import { DynamicsTrack, fermataPauses, noteVelocity, shortenFor } from './expression';
 
 export interface ScheduledNote {
@@ -35,30 +35,33 @@ export function secondsPerTick(tempo: number) {
 }
 
 /**
- * fromMeasure 小節目（0始まり）から最後まで。タイでつながった同じ高さの音は1つの長い音にする。
- * テンポは小節ごと（途中のテンポ変更は小節の頭から効く）。
+ * fromMeasure 小節目（0始まり）から最後まで。リピート記号と番号付きカッコをたどって、同じ小節を何度も鳴らす。
+ * タイでつながった同じ高さの音は1つの長い音にする。テンポは小節ごと（途中のテンポ変更は小節の頭から効く）。
  */
 export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
-  const cap = measureCapacity(score.timeSignature);
-  const count = score.parts[0].measures.length;
-  // 各小節の開始時刻と、1ティックの秒数
+  const full = playOrder(score);
+  // 再生を始める小節が最初に出てくる所から（なければその後ろの小節から）
+  let k0 = full.indexOf(fromMeasure);
+  if (k0 < 0) k0 = full.findIndex((m) => m > fromMeasure);
+  const order = k0 < 0 ? [] : full.slice(k0);
+  // 演奏順の各小節の開始時刻と、1ティックの秒数
   const starts: number[] = [];
   const spts: number[] = [];
   let t = 0;
-  for (let mi = fromMeasure; mi < count; mi++) {
-    starts[mi] = t;
-    spts[mi] = secondsPerTick(tempoAt(score, mi));
-    t += cap * spts[mi];
-  }
-  // フェルマータ：その音の終わりで、全パートそろって音の長さぶん待つ
-  const pauses = fermataPauses(score, fromMeasure, cap, (mi, ticks) => ticks * spts[mi]);
+  // フェルマータ：その音の終わりで、全パートそろって音の長さぶん待つ（リピートで同じ小節を弾くたびに待つ）
+  const pauses = fermataPauses(score, 0, (mi) => capacityAt(score, mi), (mi, ticks) => ticks * secondsPerTick(tempoAt(score, mi)));
   const pauseBefore = (mi: number, tick: number) => {
     let s = 0;
-    for (const p of pauses) if (p.measure < mi || (p.measure === mi && p.tick <= tick)) s += p.seconds;
+    for (const p of pauses) if (p.measure === mi && p.tick <= tick) s += p.seconds;
     return s;
   };
-  const length = t + pauses.reduce((a, p) => a + p.seconds, 0);
-  const timeAt = (mi: number, tick: number) => starts[mi] + tick * spts[mi] + pauseBefore(mi, tick);
+  order.forEach((mi, k) => {
+    starts[k] = t;
+    spts[k] = secondsPerTick(tempoAt(score, mi));
+    t += capacityAt(score, mi) * spts[k] + pauseBefore(mi, Infinity);
+  });
+  const length = t;
+  const timeAt = (k: number, tick: number) => starts[k] + tick * spts[k] + pauseBefore(order[k], tick);
 
   const notes: ScheduledNote[] = [];
   const marks: ScheduledMark[] = [];
@@ -66,12 +69,12 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
     // タイで次へ続く音（MIDI番号 → 鳴らしている音）
     let tied = new Map<number, ScheduledNote>();
     const dyn = new DynamicsTrack(score, partIndex);
-    for (let mi = fromMeasure; mi < count; mi++) {
+    order.forEach((mi, k) => {
       let tick = 0;
       part.measures[mi].events.forEach((ev, eventIndex) => {
         const len = eventTicks(ev);
-        const start = timeAt(mi, tick);
-        const end = timeAt(mi, tick + len);
+        const start = timeAt(k, tick);
+        const end = timeAt(k, tick + len);
         marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
         const next = new Map<number, ScheduledNote>();
         const level = dyn.levelAt(ev);
@@ -92,7 +95,7 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
         tied = next;
         tick += len;
       });
-    }
+    });
   });
   notes.sort((a, b) => a.time - b.time);
   marks.sort((a, b) => a.time - b.time || a.partIndex - b.partIndex);

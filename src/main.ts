@@ -2,7 +2,10 @@ import './style.css';
 import { Editor, Mode } from './editor/editor';
 import { DURATION_LABELS, DurationType } from './model/duration';
 import { keyLabelJa, Step, toMidi } from './model/pitch';
-import { Clef, Instrument, Score, createScore, tempoAt, tempoMarkAt } from './model/score';
+import {
+  Clef, Instrument, Score, createScore, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoAt, tempoMarkAt,
+  timeSigAt, timeSigChangeAt,
+} from './model/score';
 import { Player } from './audio/player';
 import { ScheduledMark } from './audio/schedule';
 import { playNote, setTuning, unlock, Voice } from './audio/synth';
@@ -513,6 +516,8 @@ on('#btn-remove-tuplet', () => editor.removeTuplet());
 on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1));
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
+on('#btn-measure-marks', () => openMeasureMarks(
+  (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex));
 
 
 function setZoom(z: number) {
@@ -976,6 +981,89 @@ dlgTempo.addEventListener('close', () => {
   // 直前と同じテンポにした途中の変更は不要なので消す
   if (tempoMeasure > 0 && Math.round(v) === tempoAt(editor.score, tempoMeasure - 1)) editor.removeTempo(tempoMeasure);
   else editor.setTempo(tempoMeasure, v);
+});
+
+// ---------- 小節の記号（リピート・番号付きカッコ・途中の調号と拍子・弱起） ----------
+
+const dlgMeasure = $<HTMLDialogElement>('#dlg-measure');
+const mkBeats = $<HTMLSelectElement>('#mk-beats');
+const mkBeatType = $<HTMLSelectElement>('#mk-beattype');
+const mkKey = $<HTMLSelectElement>('#mk-key');
+const mkPickup = $<HTMLSelectElement>('#mk-pickup');
+const mkRepeatEnd = $<HTMLInputElement>('#mk-repeat-end');
+[2, 3, 4, 5, 6, 7, 9, 12].forEach((n) => mkBeats.add(new Option(String(n), String(n))));
+for (const o of Array.from(keySel.options)) mkKey.add(new Option(o.text, o.value));
+let marksMeasure = 0;
+const updateTimesVisible = () => { $('#mk-times-wrap').hidden = !mkRepeatEnd.checked; };
+mkRepeatEnd.addEventListener('change', updateTimesVisible);
+
+/** 弱起の長さの候補（8分音符きざみ、1小節より短いもの） */
+function fillPickupOptions() {
+  const full = measureCapacity(timeSigAt(editor.score, 0));
+  while (mkPickup.options.length > 1) mkPickup.remove(1);
+  const names: Record<number, string> = { 240: '8分音符1つ', 480: '4分音符1つ', 720: '付点4分', 960: '2分音符', 1440: '付点2分' };
+  for (let t = 240; t < full; t += 240) {
+    const beats = t / 480;
+    mkPickup.add(new Option(`${names[t] ?? `${beats}拍分`}（${beats}拍）`, String(t)));
+  }
+}
+
+function openMeasureMarks(measure: number) {
+  marksMeasure = measure;
+  const s = editor.score;
+  const a = measureAttrsAt(s, measure);
+  $('#measure-heading').textContent = measure === 0 && s.pickup ? '弱起の小節の記号' : `${measure + (s.pickup ? 0 : 1)}小節目の記号`;
+  $<HTMLInputElement>('#mk-repeat-start').checked = !!a?.repeatStart;
+  mkRepeatEnd.checked = !!a?.repeatEnd;
+  $<HTMLSelectElement>('#mk-times').value = String(a?.repeatTimes ?? 2);
+  updateTimesVisible();
+  $<HTMLSelectElement>('#mk-volta').value = a?.volta?.join(',') ?? '';
+  const tc = measure === 0 ? null : timeSigChangeAt(s, measure);
+  const ts = timeSigAt(s, measure);
+  // 1小節目は曲全体の設定なので「変えない」は出さず、今の値を出す
+  mkBeats.options[0].hidden = measure === 0;
+  mkKey.options[0].hidden = measure === 0;
+  mkBeats.value = measure === 0 ? String(ts.beats) : tc ? String(tc.beats) : '';
+  mkBeatType.value = String(ts.beatType);
+  const kc = measure === 0 ? keyAt(s, 0) : keyChangeAt(s, measure);
+  mkKey.value = kc === null ? '' : String(kc);
+  $('#mk-pickup-wrap').hidden = measure !== 0;
+  fillPickupOptions();
+  mkPickup.value = String(s.pickup ?? 0);
+  dlgMeasure.showModal();
+}
+
+dlgMeasure.addEventListener('close', () => {
+  if (dlgMeasure.returnValue !== 'ok') return;
+  const s = editor.score;
+  const mi = marksMeasure;
+  const a = measureAttrsAt(s, mi);
+  const repeatStart = $<HTMLInputElement>('#mk-repeat-start').checked;
+  const repeatEnd = mkRepeatEnd.checked;
+  const times = Number($<HTMLSelectElement>('#mk-times').value) || 2;
+  const voltaStr = $<HTMLSelectElement>('#mk-volta').value;
+  const volta = voltaStr ? voltaStr.split(',').map(Number) : null;
+  if (repeatStart !== !!a?.repeatStart || repeatEnd !== !!a?.repeatEnd || (a?.repeatTimes ?? 2) !== times
+    || (a?.volta?.join(',') ?? '') !== voltaStr) {
+    editor.setRepeat(mi, { repeatStart, repeatEnd, repeatTimes: times, volta });
+  }
+  // 調号
+  const wantKey = mkKey.value === '' ? null : Number(mkKey.value);
+  if (mi === 0 ? wantKey !== null && wantKey !== s.keyFifths : wantKey !== keyChangeAt(s, mi)) editor.setKeyAt(mi, wantKey);
+  // 弱起（拍子より先に。拍子を変えると候補が変わるため）
+  if (mi === 0 && Number(mkPickup.value) !== (editor.score.pickup ?? 0)) editor.setPickup(Number(mkPickup.value));
+  // 拍子
+  const cur = timeSigAt(editor.score, mi);
+  if (mkBeats.value === '') {
+    if (mi > 0 && timeSigChangeAt(editor.score, mi)) editor.setTimeSignatureAt(mi, null);
+  } else {
+    const ts = { beats: Number(mkBeats.value), beatType: Number(mkBeatType.value) };
+    if (ts.beats !== cur.beats || ts.beatType !== cur.beatType) {
+      if (editor.score.parts.some((p) => p.measures.slice(mi).some((m) => m.events.some((e) => e.kind === 'note')))
+        && !confirm('拍子を変えると、この小節から後ろの音符が新しい小節の長さに並べ直されます。よろしいですか？')) return;
+      editor.setTimeSignatureAt(mi, ts);
+    }
+  }
 });
 
 // ---------- チューニング ----------

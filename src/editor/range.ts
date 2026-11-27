@@ -6,7 +6,8 @@
  */
 import { decompose } from '../model/duration';
 import {
-  MusicEvent, Part, Score, eventTicks, findEvent, measureCapacity, normalizeMeasure, restsFor, uid,
+  MusicEvent, Part, Score, beatTicks, capacityAt, eventTicks, findEvent, measureStartTick, normalizeMeasure,
+  restsBetween as beatRests, restsFor, timeSigAt, uid,
 } from '../model/score';
 
 export interface RangeSel {
@@ -26,13 +27,42 @@ export interface Clip {
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
+/** 小節の位置（弱起・途中の拍子変更で小節ごとに長さが違ってもよい） */
+interface Grid {
+  /** mi 小節目の頭の、曲頭からのティック */
+  start(mi: number): number;
+  /** その小節の長さ */
+  cap(mi: number): number;
+  /** tick を含む小節の番号 */
+  at(tick: number): number;
+  /** その小節の拍の長さ */
+  beat(mi: number): number;
+}
+
+function grid(score: Score): Grid {
+  const starts: number[] = [0];
+  const start = (mi: number) => {
+    while (starts.length <= mi) starts.push(starts[starts.length - 1] + capacityAt(score, starts.length - 1));
+    return starts[mi];
+  };
+  return {
+    start,
+    cap: (mi) => capacityAt(score, mi),
+    at: (tick) => {
+      let mi = 0;
+      while (start(mi + 1) <= tick) mi++;
+      return mi;
+    },
+    beat: (mi) => beatTicks(timeSigAt(score, mi)),
+  };
+}
+
 /** 音符・休符の、曲頭からの位置 */
 export function eventSpan(score: Score, id: string): { partIndex: number; start: number; end: number } | null {
   const loc = findEvent(score, id);
   if (!loc) return null;
-  const cap = measureCapacity(score.timeSignature);
   const m = score.parts[loc.partIndex].measures[loc.measureIndex];
-  let t = loc.measureIndex * cap;
+  let t = measureStartTick(score, loc.measureIndex);
   for (let i = 0; i < loc.eventIndex; i++) t += eventTicks(m.events[i]);
   return { partIndex: loc.partIndex, start: t, end: t + eventTicks(m.events[loc.eventIndex]) };
 }
@@ -51,10 +81,10 @@ export function rangeBetween(score: Score, aId: string, bId: string): RangeSel |
 }
 
 /** パートの音を、曲頭からの位置つきで並べる */
-function placed(part: Part, cap: number): { ev: MusicEvent; start: number; mi: number; ei: number }[] {
+function placed(part: Part, g: Grid): { ev: MusicEvent; start: number; mi: number; ei: number }[] {
   const out: { ev: MusicEvent; start: number; mi: number; ei: number }[] = [];
   part.measures.forEach((m, mi) => {
-    let t = mi * cap;
+    let t = g.start(mi);
     m.events.forEach((ev, ei) => {
       out.push({ ev, start: t, mi, ei });
       t += eventTicks(ev);
@@ -65,12 +95,12 @@ function placed(part: Part, cap: number): { ev: MusicEvent; start: number; mi: n
 
 /** 範囲に一部でもかかる音符・休符の id */
 export function rangeEventIds(score: Score, r: RangeSel): Set<string> {
-  const cap = measureCapacity(score.timeSignature);
+  const g = grid(score);
   const ids = new Set<string>();
   for (let p = r.partFrom; p <= r.partTo; p++) {
     const part = score.parts[p];
     if (!part) continue;
-    for (const x of placed(part, cap)) if (x.start < r.end && x.start + eventTicks(x.ev) > r.start) ids.add(x.ev.id);
+    for (const x of placed(part, g)) if (x.start < r.end && x.start + eventTicks(x.ev) > r.start) ids.add(x.ev.id);
   }
   return ids;
 }
@@ -110,11 +140,11 @@ function cutEvent(ev: MusicEvent, len: number, keepId: boolean, tieOut: boolean)
 }
 
 /** tick の位置で音を2つに分け、そこが音の区切りになるようにする（音符はタイでつなぐ） */
-export function splitPartAt(part: Part, tick: number, cap: number): void {
-  const mi = Math.floor(tick / cap);
+export function splitPartAt(part: Part, tick: number, g: Grid): void {
+  const mi = g.at(tick);
   const m = part.measures[mi];
   if (!m) return;
-  let t = mi * cap;
+  let t = g.start(mi);
   for (let i = 0; i < m.events.length; i++) {
     const ev = m.events[i];
     const len = eventTicks(ev);
@@ -142,21 +172,22 @@ function fixTies(part: Part): void {
 
 /** 小節が足りなければ全パートに足す */
 export function ensureTicks(score: Score, endTick: number): void {
-  const cap = measureCapacity(score.timeSignature);
-  const need = Math.ceil(endTick / cap);
-  for (const p of score.parts) while (p.measures.length < need) p.measures.push({ id: uid(), events: restsFor(cap) });
+  const g = grid(score);
+  let need = 0;
+  while (g.start(need) < endTick) need++;
+  for (const p of score.parts) while (p.measures.length < need) p.measures.push({ id: uid(), events: restsFor(g.cap(p.measures.length)) });
 }
 
 /**
  * パートの start から、events を上書きで置く。小節線をまたぐ音はタイで分ける。
  * 小節は足りている前提（ensureTicks を先に呼ぶ）。置いた音（分けたかけらを含む）を返す。
  */
-export function writeEvents(part: Part, start: number, events: MusicEvent[], cap: number): MusicEvent[] {
+export function writeEvents(part: Part, start: number, events: MusicEvent[], g: Grid): MusicEvent[] {
   const len = events.reduce((s, e) => s + eventTicks(e), 0);
   if (len <= 0) return [];
   const end = start + len;
-  splitPartAt(part, start, cap);
-  splitPartAt(part, end, cap);
+  splitPartAt(part, start, g);
+  splitPartAt(part, end, g);
   const byMeasure = new Map<number, MusicEvent[]>();
   const written: MusicEvent[] = [];
   let t = start;
@@ -164,8 +195,8 @@ export function writeEvents(part: Part, start: number, events: MusicEvent[], cap
     let remaining = eventTicks(ev);
     let first = true;
     while (remaining > 0) {
-      const mi = Math.floor(t / cap);
-      const take = Math.min((mi + 1) * cap - t, remaining);
+      const mi = g.at(t);
+      const take = Math.min(g.start(mi) + g.cap(mi) - t, remaining);
       const more = remaining - take > 0;
       const pcs = cutEvent(ev, take, first, more || (ev.kind === 'note' && !!ev.tie));
       if (!byMeasure.has(mi)) byMeasure.set(mi, []);
@@ -180,7 +211,7 @@ export function writeEvents(part: Part, start: number, events: MusicEvent[], cap
     const m = part.measures[mi];
     const before: MusicEvent[] = [];
     const after: MusicEvent[] = [];
-    let u = mi * cap;
+    let u = g.start(mi);
     for (const ev of m.events) {
       if (u < start) before.push(ev);
       else if (u >= end) after.push(ev);
@@ -194,13 +225,13 @@ export function writeEvents(part: Part, start: number, events: MusicEvent[], cap
 
 /** 範囲の中身を取り出す（楽譜は変えない） */
 export function extractRange(score: Score, r: RangeSel): Clip {
-  const cap = measureCapacity(score.timeSignature);
+  const g = grid(score);
   const parts: MusicEvent[][] = [];
   for (let p = r.partFrom; p <= r.partTo; p++) {
     const part = clone(score.parts[p]);
-    splitPartAt(part, r.start, cap);
-    splitPartAt(part, r.end, cap);
-    const evs = placed(part, cap).filter((x) => x.start >= r.start && x.start < r.end).map((x) => x.ev);
+    splitPartAt(part, r.start, g);
+    splitPartAt(part, r.end, g);
+    const evs = placed(part, g).filter((x) => x.start >= r.start && x.start < r.end).map((x) => x.ev);
     // 範囲の外へのタイは持ち出さない
     const last = evs[evs.length - 1];
     if (last?.kind === 'note') delete last.tie;
@@ -209,13 +240,15 @@ export function extractRange(score: Score, r: RangeSel): Clip {
   return { ticks: r.end - r.start, parts };
 }
 
-/** 小節線ごとに区切った休符の並び */
-function restsBetween(start: number, end: number, cap: number): MusicEvent[] {
+/** 小節線ごとに区切った、拍に沿った休符の並び */
+function restsBetween(start: number, end: number, g: Grid): MusicEvent[] {
   const out: MusicEvent[] = [];
   let t = start;
   while (t < end) {
-    const next = Math.min(end, (Math.floor(t / cap) + 1) * cap);
-    out.push(...restsFor(next - t));
+    const mi = g.at(t);
+    const ms = g.start(mi);
+    const next = Math.min(end, ms + g.cap(mi));
+    out.push(...beatRests(t - ms, next - ms, g.beat(mi)));
     t = next;
   }
   return out;
@@ -223,14 +256,14 @@ function restsBetween(start: number, end: number, cap: number): MusicEvent[] {
 
 /** 範囲を休符にする。休符だけになった小節は1つの休符にまとめる */
 export function clearRange(score: Score, r: RangeSel): void {
-  const cap = measureCapacity(score.timeSignature);
+  const g = grid(score);
   for (let p = r.partFrom; p <= r.partTo; p++) {
     const part = score.parts[p];
     if (!part) continue;
-    writeEvents(part, r.start, restsBetween(r.start, r.end, cap), cap);
-    const m0 = Math.floor(r.start / cap);
-    const m1 = Math.floor((r.end - 1) / cap);
-    for (let mi = m0; mi <= m1; mi++) if (part.measures[mi]) normalizeMeasure(part.measures[mi], cap);
+    writeEvents(part, r.start, restsBetween(r.start, r.end, g), g);
+    const m0 = g.at(r.start);
+    const m1 = g.at(r.end - 1);
+    for (let mi = m0; mi <= m1; mi++) if (part.measures[mi]) normalizeMeasure(part.measures[mi], g.cap(mi));
   }
 }
 
@@ -239,27 +272,27 @@ export function clearRange(score: Score, r: RangeSel): void {
  * 貼った範囲を返す。
  */
 export function pasteClip(score: Score, clip: Clip, partIndex: number, start: number): RangeSel | null {
-  const cap = measureCapacity(score.timeSignature);
+  const g = grid(score);
   const n = Math.min(clip.parts.length, score.parts.length - partIndex);
   if (n <= 0 || clip.ticks <= 0) return null;
   ensureTicks(score, start + clip.ticks);
   for (let k = 0; k < n; k++) {
     const evs = clone(clip.parts[k]).map((e) => ({ ...e, id: uid() }));
     // 何も入っていないパート（ありえないが念のため）は休符で埋める
-    const body = evs.length ? evs : restsBetween(start, start + clip.ticks, cap);
-    writeEvents(score.parts[partIndex + k], start, body, cap);
-    const m0 = Math.floor(start / cap);
-    const m1 = Math.floor((start + clip.ticks - 1) / cap);
-    for (let mi = m0; mi <= m1; mi++) normalizeMeasure(score.parts[partIndex + k].measures[mi], cap);
+    const body = evs.length ? evs : restsBetween(start, start + clip.ticks, g);
+    writeEvents(score.parts[partIndex + k], start, body, g);
+    const m0 = g.at(start);
+    const m1 = g.at(start + clip.ticks - 1);
+    for (let mi = m0; mi <= m1; mi++) normalizeMeasure(score.parts[partIndex + k].measures[mi], g.cap(mi));
   }
   return { partFrom: partIndex, partTo: partIndex + n - 1, start, end: start + clip.ticks };
 }
 
 /** 範囲の両端にあたる音符・休符の id（選択の印に使う） */
 export function rangeEnds(score: Score, r: RangeSel): { first: string; last: string } | null {
-  const cap = measureCapacity(score.timeSignature);
-  const top = placed(score.parts[r.partFrom], cap).find((x) => x.start + eventTicks(x.ev) > r.start);
-  const bottomList = placed(score.parts[r.partTo], cap).filter((x) => x.start < r.end);
+  const g = grid(score);
+  const top = placed(score.parts[r.partFrom], g).find((x) => x.start + eventTicks(x.ev) > r.start);
+  const bottomList = placed(score.parts[r.partTo], g).filter((x) => x.start < r.end);
   const bottom = bottomList[bottomList.length - 1];
   if (!top || !bottom) return null;
   return { first: top.ev.id, last: bottom.ev.id };

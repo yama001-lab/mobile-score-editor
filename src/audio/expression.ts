@@ -96,7 +96,7 @@ export interface FermataPause {
 
 /** フェルマータで止まる所。同じ位置に複数のパートで付いていたら長いほう */
 export function fermataPauses(
-  score: Score, fromMeasure: number, capacity: number, secondsOf: (measure: number, ticks: number) => number,
+  score: Score, fromMeasure: number, capacity: number | ((measure: number) => number), secondsOf: (measure: number, ticks: number) => number,
 ): FermataPause[] {
   const map = new Map<string, FermataPause>();
   for (const part of score.parts) {
@@ -107,10 +107,11 @@ export function fermataPauses(
         const len = eventTicks(ev);
         tick += len;
         if (!ev.articulations?.includes('fermata')) continue;
-        const key = `${mi}:${Math.min(tick, capacity)}`;
+        const cap = typeof capacity === 'number' ? capacity : capacity(mi);
+        const key = `${mi}:${Math.min(tick, cap)}`;
         const seconds = secondsOf(mi, len);
         const old = map.get(key);
-        if (!old || old.seconds < seconds) map.set(key, { measure: mi, tick: Math.min(tick, capacity), seconds });
+        if (!old || old.seconds < seconds) map.set(key, { measure: mi, tick: Math.min(tick, cap), seconds });
       }
     });
   }

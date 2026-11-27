@@ -243,6 +243,12 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .score.pen-mode { box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 4px rgba(0,0,0,.12); }
 .pen-guide { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }
 
+/* 小節の記号の画面 */
+.dlg label.check { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); }
+.dlg label.check input { width: 22px; height: 22px; }
+.dlg label[hidden], .dlg div[hidden] { display: none !important; }
+#dlg-measure { max-height: 92vh; overflow: auto; }
+
 /* 歌詞・コードネーム・文字の入力欄（iPad のキーボードに隠れないよう、楽譜の上の端に出す） */
 .tool.txt b { font-size: 15px; line-height: 24px; font-weight: 700; font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; }
 .text-entry {

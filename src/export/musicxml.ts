@@ -1,7 +1,9 @@
 /** Score → MusicXML（score-partwise 3.1）。MuseScore などほかの楽譜ソフトへ持っていくため。 */
 import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { Clef, MusicEvent, Score, eventTicks, tempoMarkAt } from '../model/score';
+import {
+  Clef, MusicEvent, Score, eventTicks, keyAt, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
+} from '../model/score';
 import { parseChord, splitSyllable } from '../model/texts';
 import { MarksXml, marksXml } from './musicxml-marks';
 
@@ -66,12 +68,30 @@ export function toMusicXml(score: Score): string {
       }).join('');
     };
     part.measures.forEach((m, mi) => {
-      out.push(`<measure number="${mi + 1}">`);
+      // 弱起の小節は 0 番で、足りない長さの小節（implicit）として書く
+      const pickup = !!score.pickup && mi === 0;
+      out.push(`<measure number="${mi + (score.pickup ? 0 : 1)}"${pickup ? ' implicit="yes"' : ''}>`);
+      const attrs = measureAttrsAt(score, mi);
+      const ending = (type: string) => `<ending number="${attrs!.volta!.join(', ')}" type="${type}"/>`;
+      const voltaKey = attrs?.volta?.join(',');
+      const voltaBegins = !!voltaKey && measureAttrsAt(score, mi - 1)?.volta?.join(',') !== voltaKey;
+      const voltaEnds = !!voltaKey && (mi === part.measures.length - 1 || measureAttrsAt(score, mi + 1)?.volta?.join(',') !== voltaKey);
+      if (attrs?.repeatStart || voltaBegins) {
+        out.push(`<barline location="left">${attrs?.repeatStart ? '<bar-style>heavy-light</bar-style>' : ''}`
+          + `${voltaBegins ? ending('start') : ''}${attrs?.repeatStart ? '<repeat direction="forward"/>' : ''}</barline>`);
+      }
+      const ts = timeSigAt(score, mi);
+      const timeXml = `<time><beats>${ts.beats}</beats><beat-type>${ts.beatType}</beat-type></time>`;
       if (mi === 0) {
         const [sign, line] = CLEFS[part.clef];
-        out.push(`<attributes><divisions>${PPQ}</divisions><key><fifths>${score.keyFifths}</fifths></key>`
-          + `<time><beats>${score.timeSignature.beats}</beats><beat-type>${score.timeSignature.beatType}</beat-type></time>`
-          + `<clef><sign>${sign}</sign><line>${line}</line></clef></attributes>`);
+        out.push(`<attributes><divisions>${PPQ}</divisions><key><fifths>${keyAt(score, 0)}</fifths></key>`
+          + timeXml + `<clef><sign>${sign}</sign><line>${line}</line></clef></attributes>`);
+      } else {
+        const kc = keyChangeAt(score, mi);
+        const tc = timeSigChangeAt(score, mi);
+        if (kc !== null || tc) {
+          out.push(`<attributes>${kc !== null ? `<key><fifths>${kc}</fifths></key>` : ''}${tc ? timeXml : ''}</attributes>`);
+        }
       }
       if (pi === 0 && m.rehearsal) {
         out.push(`<direction placement="above"><direction-type><rehearsal>${esc(m.rehearsal)}</rehearsal></direction-type></direction>`);
@@ -117,6 +137,12 @@ export function toMusicXml(score: Score): string {
         out.push(...marks.after(ev));
         tiedFromPrev = next;
       });
+      if (attrs?.repeatEnd || voltaEnds) {
+        const times = attrs?.repeatTimes ? ` times="${attrs.repeatTimes}"` : '';
+        out.push(`<barline location="right">${attrs?.repeatEnd ? '<bar-style>light-heavy</bar-style>' : ''}`
+          + `${voltaEnds ? ending(attrs?.repeatEnd ? 'stop' : 'discontinue') : ''}`
+          + `${attrs?.repeatEnd ? `<repeat direction="backward"${times}/>` : ''}</barline>`);
+      }
       out.push('</measure>');
     });
     out.push('</part>');

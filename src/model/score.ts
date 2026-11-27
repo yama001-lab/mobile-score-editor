@@ -109,6 +109,26 @@ export interface TempoMark {
   tempo: number;
 }
 
+/**
+ * 小節ごとの記号（全パート共通）。measure は小節番号（0始まり）。
+ * 小節を足したり消したりしたら shiftMeasureMarks() で番号をずらす。
+ */
+export interface MeasureAttrs {
+  measure: number;
+  /** この小節から拍子を変える */
+  timeSignature?: TimeSignature;
+  /** この小節から調号を変える（シャープの数、フラットは負） */
+  keyFifths?: number;
+  /** 小節の頭にリピート開始 |: */
+  repeatStart?: boolean;
+  /** 小節の終わりにリピート終了 :| */
+  repeatEnd?: boolean;
+  /** :| で戻る回数を含めた演奏回数（省略時 2。カッコ付きならカッコの番号から決める） */
+  repeatTimes?: number;
+  /** 番号付きカッコ（1番・2番）。この小節が何番のときに弾かれるか。続く小節で同じ番号なら1つのカッコ */
+  volta?: number[];
+}
+
 export interface Score {
   schemaVersion: number;
   id: string;
@@ -123,6 +143,10 @@ export interface Score {
   parts: Part[];
   /** 途中のテンポ変更（その小節の頭から）。1小節目のテンポは tempo。小節番号の昇順 */
   tempoMarks?: TempoMark[];
+  /** 小節ごとの拍子・調号の変更、リピート、番号付きカッコ。小節番号の昇順 */
+  measureAttrs?: MeasureAttrs[];
+  /** 弱起（アウフタクト）：1小節目の長さ（ティック）。省略時は普通の1小節 */
+  pickup?: number;
   /** 再生のチューニング：A4（ラ）の周波数 Hz。省略時は 440 */
   tuning?: number;
   /** スラー・クレッシェンドなど。消えた音符を指すものは無視する（src/model/marks.ts） */
@@ -254,13 +278,16 @@ export function createMeasure(capacity: number): Measure {
   return { id: uid(), events: restsFor(capacity) };
 }
 
-export function createPart(name: string, clef: Clef, measureCount: number, capacity: number): Part {
+export type CapacityOf = number | ((measureIndex: number) => number);
+const capOf = (c: CapacityOf, i: number) => (typeof c === 'number' ? c : c(i));
+
+export function createPart(name: string, clef: Clef, measureCount: number, capacity: CapacityOf): Part {
   return {
     id: uid(),
     name,
     clef,
     instrument: 'piano',
-    measures: Array.from({ length: measureCount }, () => createMeasure(capacity)),
+    measures: Array.from({ length: measureCount }, (_, i) => createMeasure(capOf(capacity, i))),
   };
 }
 
@@ -382,22 +409,31 @@ export function copyTexts(from: EventTexts, to: MusicEvent, lyrics = true): void
 }
 
 /** 拍子が変わったとき、パートの音を新しい小節の長さに流し直す。小節をまたぐ音はタイで分ける。 */
-export function reflowPart(part: Part, capacity: number, beat: number = PPQ): void {
-  const all = part.measures.flatMap((m) => m.events);
+export function reflowPart(part: Part, capacity: CapacityOf, beat: number = PPQ): void {
+  part.measures = reflowMeasures(part.measures, capacity, beat);
+}
+
+/**
+ * 小節の並びを、新しい小節の長さ（capacity(i) は流し直したあとの i 番目の長さ）に詰め直す。
+ * 曲の途中の拍子変更・弱起の変更でも使う。
+ */
+export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: number = PPQ): Measure[] {
+  const all = source.flatMap((m) => m.events);
   // 練習番号は、元の小節の頭の時刻で新しい小節に付け直す
   const rehearsals: { tick: number; text: string }[] = [];
   let at = 0;
-  for (const m of part.measures) {
+  for (const m of source) {
     if (m.rehearsal) rehearsals.push({ tick: at, text: m.rehearsal });
     at += measureTicks(m);
   }
   const measures: Measure[] = [];
   let cur: Measure = { id: uid(), events: [] };
   let used = 0;
+  const cap = () => capOf(capacity, measures.length);
   const push = (ev: MusicEvent) => {
     cur.events.push(ev);
     used += eventTicks(ev);
-    if (used >= capacity) {
+    if (used >= cap()) {
       measures.push(cur);
       cur = { id: uid(), events: [] };
       used = 0;
@@ -412,18 +448,18 @@ export function reflowPart(part: Part, capacity: number, beat: number = PPQ): vo
       const group = all.slice(k, e);
       const len = group.reduce((s, g) => s + eventTicks(g), 0);
       k = e - 1;
-      if (len > capacity) {
+      if (len > cap()) {
         for (const r of restsFor(len)) push(r);
         continue;
       }
-      if (len > capacity - used) for (const r of restsFor(capacity - used)) push(r);
+      if (len > cap() - used) for (const r of restsFor(cap() - used)) push(r);
       for (const g of group) push(g);
       continue;
     }
     let remaining = eventTicks(ev);
     let first = true;
     while (remaining > 0) {
-      const room = capacity - used;
+      const room = cap() - used;
       const take = Math.min(room, remaining);
       const pieces = take === remaining && first ? [{ duration: ev.duration, dots: ev.dots }] : decompose(take);
       for (let k = 0; k < pieces.length; k++) {
@@ -446,16 +482,18 @@ export function reflowPart(part: Part, capacity: number, beat: number = PPQ): vo
     }
   }
   if (cur.events.length) {
-    cur.events.push(...restsBetween(used, capacity, beat));
+    cur.events.push(...restsBetween(used, cap(), beat));
     measures.push(cur);
   }
-  if (!measures.length) measures.push(createMeasure(capacity));
-  measures.forEach((m) => normalizeMeasure(m, capacity));
+  if (!measures.length) measures.push(createMeasure(cap()));
+  measures.forEach((m, i) => normalizeMeasure(m, capOf(capacity, i)));
   for (const r of rehearsals) {
-    const m = measures[Math.min(measures.length - 1, Math.floor(r.tick / capacity))];
-    m.rehearsal ??= r.text;
+    let start = 0;
+    let i = 0;
+    while (i < measures.length - 1 && start + capOf(capacity, i) <= r.tick) start += capOf(capacity, i++);
+    measures[i].rehearsal ??= r.text;
   }
-  part.measures = measures;
+  return measures;
 }
 
 /** その小節で有効なテンポ */
@@ -473,7 +511,184 @@ export function tempoMarkAt(score: Score, measure: number): number | null {
 
 /** 全パートの小節数を最長に合わせる。 */
 export function equalizeMeasureCounts(score: Score): void {
-  const cap = measureCapacity(score.timeSignature);
   const n = Math.max(...score.parts.map((p) => p.measures.length));
-  for (const p of score.parts) while (p.measures.length < n) p.measures.push(createMeasure(cap));
+  for (const p of score.parts) while (p.measures.length < n) p.measures.push(createMeasure(capacityAt(score, p.measures.length)));
+}
+
+// ---------- 小節ごとの拍子・調号・リピート ----------
+
+export function measureAttrsAt(score: Score, measure: number): MeasureAttrs | undefined {
+  return score.measureAttrs?.find((a) => a.measure === measure);
+}
+
+/** その小節で有効な拍子 */
+export function timeSigAt(score: Score, measure: number): TimeSignature {
+  let ts = score.timeSignature;
+  for (const a of score.measureAttrs ?? []) if (a.measure <= measure && a.timeSignature) ts = a.timeSignature;
+  return ts;
+}
+
+/** その小節で有効な調号 */
+export function keyAt(score: Score, measure: number): number {
+  let k = score.keyFifths;
+  for (const a of score.measureAttrs ?? []) if (a.measure <= measure && a.keyFifths !== undefined) k = a.keyFifths;
+  return k;
+}
+
+/** 小節の長さ（ティック）。弱起なら1小節目は短い */
+export function capacityAt(score: Score, measure: number): number {
+  if (measure === 0 && score.pickup && score.pickup > 0) return Math.min(score.pickup, measureCapacity(timeSigAt(score, 0)));
+  return measureCapacity(timeSigAt(score, measure));
+}
+
+/** この小節の頭で拍子が変わるか（1小節目は除く） */
+export function timeSigChangeAt(score: Score, measure: number): TimeSignature | null {
+  if (measure === 0) return null;
+  const a = measureAttrsAt(score, measure)?.timeSignature;
+  if (!a) return null;
+  const prev = timeSigAt(score, measure - 1);
+  return a.beats === prev.beats && a.beatType === prev.beatType ? null : a;
+}
+
+/** 曲頭から measure 小節目の頭までのティック（小節ごとに長さが違ってもよい） */
+export function measureStartTick(score: Score, measure: number): number {
+  let t = 0;
+  for (let i = 0; i < measure; i++) t += capacityAt(score, i);
+  return t;
+}
+
+/** 曲頭からのティック tick を含む小節の番号（最後の小節より後ろなら最後の小節） */
+export function measureAtTick(score: Score, tick: number): number {
+  const n = score.parts[0].measures.length;
+  let t = 0;
+  for (let i = 0; i < n; i++) {
+    t += capacityAt(score, i);
+    if (tick < t) return i;
+  }
+  return n - 1;
+}
+
+/** この小節の頭で調号が変わるか（1小節目は除く） */
+export function keyChangeAt(score: Score, measure: number): number | null {
+  if (measure === 0) return null;
+  const a = measureAttrsAt(score, measure)?.keyFifths;
+  if (a === undefined || a === keyAt(score, measure - 1)) return null;
+  return a;
+}
+
+/** 小節の記号を書き換える。空になったら消す */
+export function updateMeasureAttrs(score: Score, measure: number, fn: (a: MeasureAttrs) => void): void {
+  const list = (score.measureAttrs ??= []);
+  let a = list.find((x) => x.measure === measure);
+  if (!a) {
+    a = { measure };
+    list.push(a);
+    list.sort((x, y) => x.measure - y.measure);
+  }
+  fn(a);
+  for (const k of Object.keys(a) as (keyof MeasureAttrs)[]) {
+    const v = a[k];
+    if (v === undefined || v === false || (Array.isArray(v) && !v.length)) delete a[k];
+  }
+  if (Object.keys(a).length === 1) score.measureAttrs = list.filter((x) => x !== a);
+  if (!score.measureAttrs!.length) delete score.measureAttrs;
+}
+
+/**
+ * 小節を足した・消したときに、小節番号で持っている情報（テンポ変更・小節の記号）をずらす。
+ * from 以降の小節を delta だけずらす。delta が負なら from から -delta 個の小節が消えたとして、
+ * その中の拍子・調号・テンポの変更は消えずに次の小節へ引き継ぐ（後ろにすでにあればそちらを優先）。
+ */
+export function shiftMeasureMarks(score: Score, from: number, delta: number): void {
+  const n = score.parts[0].measures.length;
+  const move = (m: number) => (m >= from ? (delta < 0 ? Math.max(from, m + delta) : m + delta) : m);
+  if (score.tempoMarks) {
+    const out: TempoMark[] = [];
+    for (const t of score.tempoMarks) {
+      const removed = delta < 0 && t.measure >= from && t.measure < from - delta;
+      const m = move(t.measure);
+      if (m < 1 || m >= n) continue;
+      const i = out.findIndex((u) => u.measure === m);
+      if (i >= 0) { if (!removed) out[i] = { ...t, measure: m }; continue; }
+      out.push({ ...t, measure: m });
+    }
+    score.tempoMarks = out.sort((a, b) => a.measure - b.measure);
+  }
+  if (score.measureAttrs) {
+    const out: MeasureAttrs[] = [];
+    for (const a of score.measureAttrs) {
+      const removed = delta < 0 && a.measure >= from && a.measure < from - delta;
+      const m = move(a.measure);
+      if (m >= n) continue;
+      // 消えた小節のリピート・カッコは消す。拍子・調号の変更だけ引き継ぐ
+      const carried: MeasureAttrs = removed
+        ? { measure: m, ...(a.timeSignature ? { timeSignature: a.timeSignature } : {}), ...(a.keyFifths !== undefined ? { keyFifths: a.keyFifths } : {}) }
+        : { ...a, measure: m };
+      const prev = out.find((u) => u.measure === m);
+      if (prev) {
+        // 後ろの小節にもともとあった指定を優先する
+        if (removed) {
+          if (carried.timeSignature && !prev.timeSignature) prev.timeSignature = carried.timeSignature;
+          if (carried.keyFifths !== undefined && prev.keyFifths === undefined) prev.keyFifths = carried.keyFifths;
+        } else Object.assign(prev, carried);
+      } else if (Object.keys(carried).length > 1) out.push(carried);
+    }
+    // 1小節目の拍子・調号の変更は、曲頭の設定に入れる
+    const first = out.find((a) => a.measure === 0);
+    if (first?.timeSignature) { score.timeSignature = first.timeSignature; delete first.timeSignature; }
+    if (first?.keyFifths !== undefined) { score.keyFifths = first.keyFifths; delete first.keyFifths; }
+    score.measureAttrs = out.filter((a) => Object.keys(a).length > 1).sort((a, b) => a.measure - b.measure);
+    if (!score.measureAttrs.length) delete score.measureAttrs;
+  }
+}
+
+/**
+ * 演奏する小節の順番（リピートと番号付きカッコをたどる）。
+ * - :| で、直前の |: （なければ曲頭か、前の :| の次）へ戻る
+ * - 番号付きカッコは、今が何回目かに合う番号のものだけ弾く
+ */
+export function playOrder(score: Score): number[] {
+  const n = score.parts[0].measures.length;
+  const order: number[] = [];
+  let i = 0;
+  let pass = 1;
+  let start = 0;
+  let jumped = false;
+  let inVolta = false;
+  const limit = n * 20;
+  while (i < n && order.length < limit) {
+    const a = measureAttrsAt(score, i);
+    if (a?.repeatStart && !jumped) { start = i; pass = 1; }
+    jumped = false;
+    if (a?.volta?.length) {
+      if (!a.volta.includes(pass)) {
+        // このカッコをとばす（同じ番号が続く所まで）
+        const key = a.volta.join(',');
+        while (i < n && measureAttrsAt(score, i)?.volta?.join(',') === key) i++;
+        continue;
+      }
+      inVolta = true;
+    } else if (inVolta) {
+      // カッコを抜けたら、繰り返しは終わり
+      inVolta = false;
+      pass = 1;
+      start = i;
+    }
+    order.push(i);
+    if (a?.repeatEnd) {
+      const times = a.repeatTimes ?? (a.volta?.length ? Math.max(...a.volta) + 1 : 2);
+      if (pass < times) {
+        pass++;
+        i = start;
+        jumped = true;
+        inVolta = false;
+        continue;
+      }
+      pass = 1;
+      start = i + 1;
+      inVolta = false;
+    }
+    i++;
+  }
+  return order;
 }
