@@ -78,17 +78,18 @@ button, select, input { font: inherit; color: inherit; }
   position: relative;
   background: var(--paper); margin: 0 auto; box-shadow: 0 1px 4px rgba(0,0,0,.12);
   border-radius: 4px; touch-action: pan-x pan-y;
+  -webkit-touch-callout: none; /* 長押しで範囲選択するので、iPadの長押しメニューを出さない */
 }
 .score svg { display: block; }
 .score.input-mode { cursor: crosshair; }
 /* モードの説明（切り替えたときに少しだけ出す） */
 .hint {
-  position: absolute; left: 14px; bottom: 16px; margin: 0;
-  max-width: min(640px, calc(100% - 200px)); padding: 8px 14px; border-radius: 12px;
-  background: rgba(31,41,55,.9); color: #f9fafb; font-size: 13px; line-height: 1.5;
-  pointer-events: none; opacity: 0; transition: opacity .3s;
+  position: absolute; left: 50%; top: 10px; transform: translateX(-50%); margin: 0; z-index: 4;
+  width: max-content; max-width: min(560px, calc(100% - 24px)); padding: 6px 12px; border-radius: 10px;
+  background: rgba(31,41,55,.88); color: #f9fafb; font-size: 12.5px; line-height: 1.45;
+  pointer-events: none; opacity: 0; transition: opacity .3s; cursor: pointer;
 }
-.hint.show { opacity: 1; }
+.hint.show { opacity: 1; pointer-events: auto; }
 .toast {
   position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
   max-width: min(520px, calc(100% - 24px)); padding: 10px 16px; border-radius: 12px;
@@ -137,11 +138,11 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 .toolbar { display: flex; align-items: stretch; min-height: 60px; }
-.modes { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-right: 1px solid var(--btn-border); flex: none; }
+.modes { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-right: 1px solid var(--btn-border); flex: none; }
 .seg { display: flex; background: #d9dde3; border-radius: 12px; padding: 3px; gap: 2px; }
 .seg-b {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
-  min-width: 52px; height: 46px; padding: 0 6px; border: none; border-radius: 9px; background: transparent;
+  min-width: 46px; height: 46px; padding: 0 6px; border: none; border-radius: 9px; background: transparent;
   font-size: 11px; color: #374151; cursor: pointer;
 }
 .seg-b.on { background: #fff; color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.15); font-weight: 700; }
@@ -153,20 +154,17 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 }
 .seg-b.soon::after { content: "準備中"; }
 .palette-scroll {
-  flex: 1; display: flex; align-items: center; gap: 0; overflow-x: auto; overflow-y: hidden;
-  padding: 6px 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-  /* 右端が切れていることが分かるように薄くぼかす */
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  /* 横スクロールせず、入りきらないときは段を折り返して全部のボタンを見せる */
+  flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; align-content: center; row-gap: 2px;
+  padding: 6px 4px;
 }
-.palette-scroll::-webkit-scrollbar { display: none; }
-.palette-scroll.at-end { -webkit-mask-image: none; mask-image: none; }
 .group { display: flex; gap: 2px; }
-.palette-scroll .group { padding: 0 6px; border-right: 1px solid #d1d5db; flex: none; }
-.palette-scroll .group:last-child { border-right: none; padding-right: 24px; }
+.group[hidden] { display: none; }
+.palette-scroll .group { padding: 0 4px; border-right: 1px solid #d1d5db; flex: none; }
+.palette-scroll .group:last-child { border-right: none; }
 .tool {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
-  min-width: 46px; height: 48px; padding: 0 4px; border: 1px solid transparent; border-radius: 10px;
+  min-width: 42px; height: 48px; padding: 0 3px; border: 1px solid transparent; border-radius: 10px;
   background: transparent; font-size: 10.5px; color: #374151; cursor: pointer; flex: none;
 }
 .tool span { white-space: nowrap; }
@@ -237,7 +235,6 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   .toolbar { flex-direction: column; }
   .modes { border-right: none; border-bottom: 1px solid var(--btn-border); }
   #btn-rewind, #btn-redo, #btn-sound { display: none; }
-  .hint { max-width: calc(100% - 28px); bottom: 70px; }
 }
 
 /* ---------- 手書き（ステップ3） ---------- */

@@ -95,3 +95,35 @@ describe('編集', () => {
     expect(s.parts[0].measures.length).toBe(1);
   });
 });
+
+import { restsBetween, beatTicks, createScore as mkScore } from '../src/model/score';
+import { Editor as Ed } from '../src/editor/editor';
+
+describe('拍に沿った休符', () => {
+  const kinds = (rs: { duration: string; dots: number }[]) => rs.map((r) => r.duration + '.'.repeat(r.dots));
+  it('4/4 の8分目から小節の終わりまで → 8分・4分・2分', () => {
+    expect(kinds(restsBetween(240, 1920, 480))).toEqual(['8', 'q', 'h']);
+  });
+  it('4/4 の2拍目から → 4分・2分', () => {
+    expect(kinds(restsBetween(480, 1920, 480))).toEqual(['q', 'h']);
+  });
+  it('6/8 は付点4分が1拍', () => {
+    const b = beatTicks({ beats: 6, beatType: 8 });
+    expect(b).toBe(720);
+    expect(kinds(restsBetween(240, 1440, b))).toEqual(['8', '8', 'q.']);
+  });
+});
+
+describe('調号の変更', () => {
+  it('今ある音の高さは変えない', () => {
+    const s = mkScore();
+    s.parts[0].measures[0].events = [
+      { id: 'a', kind: 'note', duration: 'w', dots: 0, pitches: [{ step: 'F', alter: 0, octave: 4 }] },
+    ];
+    const ed = new Ed(s);
+    ed.setKeySignature(1);
+    const ev = ed.score.parts[0].measures[0].events[0];
+    expect(ev.kind === 'note' && ev.pitches[0].alter).toBe(0);
+    expect(ed.score.keyFifths).toBe(1);
+  });
+});

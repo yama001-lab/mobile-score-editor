@@ -20,7 +20,7 @@ describe('連符', () => {
     e.inputMidi(60);
     e.inputMidi(62);
     e.inputMidi(64);
-    expect(shape(m0(e)).slice(0, 4)).toEqual(['C8/3', 'D8/3', 'E8/3', 'rh']);
+    expect(shape(m0(e)).slice(0, 5)).toEqual(['C8/3', 'D8/3', 'E8/3', 'rq', 'rh']);
     expect(m0(e).slice(0, 3).map(eventTicks)).toEqual([160, 160, 160]);
     expect(full(e)).toBe(true);
     // 連符の後は普通の音符に戻る
@@ -44,7 +44,7 @@ describe('連符', () => {
     e.setCursor({ partIndex: 0, measureIndex: 0, eventIndex: 1 });
     e.setInputDuration('h');
     e.inputMidi(64);
-    expect(shape(m0(e)).slice(0, 3)).toEqual(['Cq/3', 'E8/3', 'rh']);
+    expect(shape(m0(e)).slice(0, 4)).toEqual(['Cq/3', 'E8/3', 'rq', 'rh']);
     expect(full(e)).toBe(true);
   });
 

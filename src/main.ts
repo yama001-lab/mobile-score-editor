@@ -65,6 +65,7 @@ function render() {
     width,
     scale: zoom,
     selectedId: editor.selectedId,
+    rangeIds: editor.rangeIds,
     selectedPitchIndex: editor.selectedPitchIndex,
     cursor: editor.mode !== 'select' ? editor.cursor : null,
   });
@@ -104,10 +105,14 @@ function updatePalette() {
   // 入力モードのタイは「直前の音とタイでつないで足す」なので、選択がなくても押せる
   $('#btn-tie').classList.toggle('on', !!(isNote && sel.tie));
   ($('#btn-tie') as HTMLButtonElement).disabled = !isNote && editor.mode !== 'input';
-  ($('#btn-back') as HTMLButtonElement).disabled = !editor.canUndo;
-  for (const id of ['#btn-up', '#btn-down']) ($(id) as HTMLButtonElement).disabled = !isNote;
-  document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) => (b.disabled = !isNote));
-  for (const id of ['#btn-left', '#btn-right', '#btn-delete']) ($(id) as HTMLButtonElement).disabled = !sel;
+  const ranged = !!editor.range;
+  for (const id of ['#btn-up', '#btn-down']) ($(id) as HTMLButtonElement).disabled = !isNote && !ranged;
+  document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) => (b.disabled = !isNote && !ranged));
+  for (const id of ['#btn-left', '#btn-right']) ($(id) as HTMLButtonElement).disabled = !sel || ranged;
+  ($('#btn-delete') as HTMLButtonElement).disabled = !sel && !ranged;
+  $('#btn-range').classList.toggle('on', rangeTapMode && editor.mode === 'select');
+  for (const id of ['#btn-copy', '#btn-cut']) ($(id) as HTMLButtonElement).disabled = !editor.canCopy;
+  ($('#btn-paste') as HTMLButtonElement).disabled = !editor.canPaste;
   ($('#btn-undo') as HTMLButtonElement).disabled = !editor.canUndo;
   ($('#btn-redo') as HTMLButtonElement).disabled = !editor.canRedo;
   scoreEl.classList.toggle('input-mode', editor.mode === 'input');
@@ -125,19 +130,28 @@ function updatePalette() {
       ? (panelShown()
         ? '入力：鍵盤を押すと青い帯の位置に入ります。押さえたまま別の鍵で和音。五線のタップでも入ります'
         : '入力：五線をタップすると、その高さの音符が入ります')
-      : '選択：音符をタップして選び、上下にドラッグで高さを変えます');
+      : '選択：音符をタップして選び、上下にドラッグで高さを変えます。長押ししてなぞると範囲を選べます');
   }
 }
 
 let lastHintKey = '';
 let hintTimer = 0;
+/** モードの説明は、同じ説明につき2回まで。楽譜の上の端に小さく出し、タップで閉じる */
 function showHint(text: string) {
+  const countKey = `score-editor:hint:${lastHintKey}`;
+  const shown = Number(safeGet(countKey) ?? 0);
+  if (shown >= 2) return;
+  safeSet(countKey, String(shown + 1));
   const h = $('#hint');
   h.textContent = text;
   h.classList.add('show');
   clearTimeout(hintTimer);
-  hintTimer = window.setTimeout(() => h.classList.remove('show'), 3500);
+  hintTimer = window.setTimeout(() => h.classList.remove('show'), 3000);
 }
+$('#hint').addEventListener('click', () => {
+  clearTimeout(hintTimer);
+  $('#hint').classList.remove('show');
+});
 
 let toastTimer = 0;
 function toast(text: string, ms = 3500) {
@@ -194,7 +208,15 @@ function eventIndexAt(h: MeasureHit, x: number) {
   return i >= 0 ? i : h.events.length - 1;
 }
 
-let drag: { pointerId: number; startY: number; moved: boolean; onSelected: boolean; hit: MeasureHit } | null = null;
+let drag: {
+  pointerId: number; startX: number; startY: number; moved: boolean; onSelected: boolean; hit: MeasureHit;
+  /** 長押しで始めた範囲選択のなぞり中 */
+  range?: boolean;
+} | null = null;
+/** 「範囲」ボタンがオンのとき、タップで範囲を広げる */
+let rangeTapMode = false;
+let longPressTimer = 0;
+const LONG_PRESS_MS = 450;
 
 scoreEl.addEventListener('pointerdown', (ev) => {
   if (ev.button > 0 || editor.mode === 'pen') return;
@@ -206,19 +228,56 @@ scoreEl.addEventListener('pointerdown', (ev) => {
   const idx = eventIndexAt(h, x);
   const e = h.events[idx];
   const onSelected = !!e && e.id === editor.selectedId && editor.mode === 'select';
-  drag = { pointerId: ev.pointerId, startY: y, moved: false, onSelected, hit: h };
+  drag = { pointerId: ev.pointerId, startX: x, startY: y, moved: false, onSelected, hit: h };
   if (onSelected) scoreEl.setPointerCapture(ev.pointerId);
+  // 選択モードで長押し → そのままなぞって範囲選択
+  clearTimeout(longPressTimer);
+  if (editor.mode === 'select' && e) {
+    const pointerId = ev.pointerId;
+    longPressTimer = window.setTimeout(() => {
+      if (!drag || drag.pointerId !== pointerId || drag.moved) return;
+      drag.range = true;
+      rangeTouch = ev.pointerType === 'touch';
+      try { scoreEl.setPointerCapture(pointerId); } catch { /* 指がもう離れている */ }
+      editor.selectRange(e.id, e.id);
+      showHint('指を動かして範囲を広げます');
+    }, LONG_PRESS_MS);
+  }
 });
 
 scoreEl.addEventListener('pointermove', (ev) => {
   if (!drag || ev.pointerId !== drag.pointerId) return;
-  const { y } = localPoint(ev);
+  const { x, y } = localPoint(ev);
+  if (drag.range) {
+    const h = hitAt(x, y);
+    const e = h?.events[eventIndexAt(h, x)];
+    if (e) editor.extendSelectionTo(e.id);
+    return;
+  }
   if (Math.abs(y - drag.startY) > 4) drag.moved = true;
+  if (Math.abs(x - drag.startX) > 8) { drag.moved = true; clearTimeout(longPressTimer); }
+  if (drag.moved) clearTimeout(longPressTimer);
   if (drag.onSelected && drag.moved) editor.moveSelectedTo(diatonicAtY(drag.hit, y));
 });
 
 // ドラッグ中は画面がスクロールしないようにする（iPadのSafari向け）
-scoreEl.addEventListener('touchmove', (ev) => { if (drag?.onSelected) ev.preventDefault(); }, { passive: false });
+scoreEl.addEventListener('touchmove', (ev) => {
+  if (drag?.onSelected || drag?.range || rangeTouch) ev.preventDefault();
+  // 指の長押しなぞりは touch で追う（ブラウザがスクロールを始めて pointercancel が来ても続けられるように）
+  if (rangeTouch && ev.touches[0]) {
+    const r = scoreEl.getBoundingClientRect();
+    const x = (ev.touches[0].clientX - r.left) / zoom;
+    const y = (ev.touches[0].clientY - r.top) / zoom;
+    const h = hitAt(x, y);
+    const e = h?.events[eventIndexAt(h, x)];
+    if (e) editor.extendSelectionTo(e.id);
+  }
+}, { passive: false });
+const endRangeTouch = () => { rangeTouch = false; };
+scoreEl.addEventListener('touchend', endRangeTouch);
+scoreEl.addEventListener('touchcancel', endRangeTouch);
+/** 指の長押しで範囲選択をなぞっている間 true */
+let rangeTouch = false;
 
 let tempoTap: { pointerId: number; measure: number } | null = null;
 
@@ -232,7 +291,9 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
   if (!drag || ev.pointerId !== drag.pointerId) return;
   const d = drag;
   drag = null;
+  clearTimeout(longPressTimer);
   editor.endGesture();
+  if (d.range) return;
   if (cancelled || d.moved) return;
   const { x, y } = localPoint(ev);
   const h = hitAt(x, y) ?? d.hit;
@@ -269,7 +330,8 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
       e.headYs.forEach((hy, i) => { const dd = Math.abs(hy - y); if (dd < bd) { bd = dd; pi = i; } });
       // VexFlowの getYs() は低い音から順
     }
-    editor.select(e.id, pi);
+    if ((ev.shiftKey || rangeTapMode) && editor.selectedId) editor.extendSelectionTo(e.id);
+    else editor.select(e.id, pi);
   }
 }
 scoreEl.addEventListener('pointerup', (ev) => endPointer(ev, false));
@@ -285,6 +347,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
   }));
 
 function setMode(m: Mode) {
+  if (m !== 'select') rangeTapMode = false;
   editor.setMode(m);
   penLayer.setEnabled(m === 'pen');
 }
@@ -327,12 +390,37 @@ on('#btn-dot', () => editor.toggleDot());
 on('#btn-rest', () => editor.inputRest());
 on('#btn-tie', () => { editor.toggleTie(); previewSelected(); });
 on('#btn-chord', () => editor.toggleChordMode());
-on('#btn-back', () => editor.undo());
 on('#btn-up', () => editor.transposeSelected(1));
 on('#btn-down', () => editor.transposeSelected(-1));
 on('#btn-left', () => editor.shiftSelected(-1));
 on('#btn-right', () => editor.shiftSelected(1));
 on('#btn-delete', () => editor.deleteSelected());
+
+// ---------- 範囲選択・コピー・貼り付け ----------
+
+function copyNow(cut = false) {
+  const ok = cut ? editor.cut() : editor.copy();
+  if (ok) toast(cut ? '切り取りました。貼り付けたい音を選んで「貼り付け」' : 'コピーしました。貼り付けたい音を選んで「貼り付け」', 2500);
+}
+function pasteNow() {
+  if (!editor.clipboard) { toast('先に範囲を選んでコピーしてください'); return; }
+  if (!editor.paste()) toast('貼り付ける位置の音を選んでください');
+}
+on('#btn-range', () => {
+  if (editor.mode !== 'select') setMode('select');
+  rangeTapMode = !rangeTapMode;
+  if (rangeTapMode) toast(editor.selectedId ? 'タップした音までを範囲にします' : '始めの音、終わりの音の順にタップしてください');
+  updatePalette();
+});
+on('#btn-copy', () => copyNow());
+on('#btn-cut', () => copyNow(true));
+on('#btn-paste', pasteNow);
+on('#btn-select-measure', () => {
+  setMode('select');
+  const c = editor.cursor;
+  editor.selectMeasures(c.partIndex, c.partIndex, c.measureIndex, c.measureIndex);
+});
+on('#btn-select-all', () => { setMode('select'); editor.selectAll(); });
 on('#btn-undo', () => editor.undo());
 on('#btn-redo', () => editor.redo());
 on('#btn-zoom-in', () => setZoom(zoom * 1.15));
@@ -405,12 +493,6 @@ on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
 
-// 道具バーが右に続いていることを示すぼかしは、端までスクロールしたら消す
-const paletteEl = $('#palette');
-function updatePaletteFade() {
-  paletteEl.classList.toggle('at-end', paletteEl.scrollLeft + paletteEl.clientWidth >= paletteEl.scrollWidth - 2);
-}
-paletteEl.addEventListener('scroll', updatePaletteFade, { passive: true });
 
 function setZoom(z: number) {
   zoom = Math.min(2.5, Math.max(0.5, z));
@@ -432,6 +514,10 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (mod && k.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) editor.redo(); else editor.undo(); return; }
   if (mod && k.toLowerCase() === 'y') { e.preventDefault(); editor.redo(); return; }
+  if (mod && k.toLowerCase() === 'c') { e.preventDefault(); copyNow(); return; }
+  if (mod && k.toLowerCase() === 'x') { e.preventDefault(); copyNow(true); return; }
+  if (mod && k.toLowerCase() === 'v') { e.preventDefault(); pasteNow(); return; }
+  if (mod && k.toLowerCase() === 'a') { e.preventDefault(); setMode('select'); editor.selectAll(); return; }
   // Ctrl+2〜6：連符（MuseScore と同じ）
   if (e.ctrlKey && /^[2-6]$/.test(k)) { e.preventDefault(); makeTuplet(Number(k)); return; }
   if (mod) return;
@@ -447,14 +533,14 @@ document.addEventListener('keydown', (e) => {
   switch (k) {
     case 'n': case 'N': setMode(editor.mode === 'input' ? 'select' : 'input'); break;
     case 'p': case 'P': setMode(editor.mode === 'pen' ? 'input' : 'pen'); break;
-    case 'Escape': setMode('select'); break;
+    case 'Escape': if (editor.range) editor.clearRange(); else setMode('select'); break;
     case '.': editor.toggleDot(); break;
     case '0': editor.inputRest(); break;
     case 't': case 'T': editor.toggleTie(); break;
     case 'ArrowUp': e.preventDefault(); editor.transposeSelected(e.shiftKey ? 7 : 1); break;
     case 'ArrowDown': e.preventDefault(); editor.transposeSelected(e.shiftKey ? -7 : -1); break;
-    case 'ArrowLeft': e.preventDefault(); editor.moveSelection(-1); break;
-    case 'ArrowRight': e.preventDefault(); editor.moveSelection(1); break;
+    case 'ArrowLeft': e.preventDefault(); if (e.shiftKey) editor.extendByStep(-1); else editor.moveSelection(-1); break;
+    case 'ArrowRight': e.preventDefault(); if (e.shiftKey) editor.extendByStep(1); else editor.moveSelection(1); break;
     case 'Delete': case 'Backspace': e.preventDefault(); editor.deleteSelected(); break;
     case '+': editor.setSelectedAccidental(1); break;
     case '-': editor.setSelectedAccidental(-1); break;
@@ -732,7 +818,6 @@ function setPanel(show: boolean) {
   safeSet('score-editor:keyboard', show ? '1' : '0');
   if (show) { keyboard.layout(); updateRange(); }
   requestRender();
-  updatePaletteFade();
   // 鍵盤で隠れた入力位置を見えるようにする
   requestAnimationFrame(() => requestAnimationFrame(() => focusInputPosition(true)));
 }
@@ -926,7 +1011,6 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 window.addEventListener('resize', () => {
   if (panelShown()) { keyboard.layout(); updateRange(); }
   requestRender();
-  updatePaletteFade();
 });
 // 初めての人には鍵盤を出しておく
 setPanel(safeGet('score-editor:keyboard') !== '0');

@@ -5,7 +5,7 @@
  * - ステップ4（PDF取り込み）: OMR結果（MusicXMLなど）を Score に変換する
  * 構造を変えるときは schemaVersion を上げ、storage の migrate() で古いデータを変換する。
  */
-import { DurationType, DurationValue, decompose, ticksOf } from './duration';
+import { BASE_TICKS, DurationType, DurationValue, PPQ, decompose, ticksOf } from './duration';
 import { Pitch, comparePitch } from './pitch';
 
 export const SCHEMA_VERSION = 1;
@@ -169,6 +169,49 @@ export function restsFor(ticks: number) {
   return decompose(ticks).map((d) => makeRest(d.duration, d.dots));
 }
 
+/** 拍の長さ（ティック）。6/8・9/8・12/8 などの複合拍子は付点4分を1拍とする。 */
+export function beatTicks(ts: TimeSignature): number {
+  const unit = (4 * PPQ) / ts.beatType;
+  return ts.beatType >= 8 && ts.beats % 3 === 0 && ts.beats > 3 ? unit * 3 : unit;
+}
+
+/**
+ * 小節の start〜end（小節頭からのティック）を埋める休符。拍の区切りに沿わせる
+ * （例: 4/4 の8分目から → 8分・4分・2分。付点2分＋8分にはしない）。
+ */
+export function restsBetween(start: number, end: number, beat: number = PPQ): RestEvent[] {
+  const out: RestEvent[] = [];
+  const single = (ticks: number) => {
+    const d = decompose(ticks);
+    return d.length === 1 && ticksOf(d[0].duration, d[0].dots) === ticks ? d[0] : null;
+  };
+  let t = start;
+  while (t < end) {
+    let take = 0;
+    if (t % beat === 0 && end - t >= beat) {
+      // 拍の頭：その位置で割り切れる、拍の2のべき乗倍のうち一番長いもの
+      take = beat;
+      while (t % (take * 2) === 0 && t + take * 2 <= end && single(take * 2)) take *= 2;
+      if (!single(take)) take = 0;
+    }
+    if (!take) {
+      // 拍の途中：次の拍の頭までを、位置で割り切れる2のべき乗の長さで埋める
+      const limit = Math.min(end, (Math.floor(t / beat) + 1) * beat);
+      for (let d = BASE_TICKS.w; d >= BASE_TICKS['32']; d /= 2) {
+        if (t % d === 0 && t + d <= limit) { take = d; break; }
+      }
+    }
+    if (!take) {
+      out.push(...restsFor(end - t));
+      break;
+    }
+    const v = single(take)!;
+    out.push(makeRest(v.duration, v.dots));
+    t += take;
+  }
+  return out;
+}
+
 export function createMeasure(capacity: number): Measure {
   return { id: uid(), events: restsFor(capacity) };
 }
@@ -228,7 +271,7 @@ export function eventAt(score: Score, loc: EventLocation): MusicEvent | undefine
  * 小節内の index の位置から ev（複数可）を上書きで置く。後ろの音は削られ、余りは休符になる。
  * 連符にかかったら、その連符はまるごと消す（途中で切れた連符を残さない）。
  */
-export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEvent[]): void {
+export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEvent[], beat: number = PPQ): void {
   const evs = Array.isArray(ev) ? ev : [ev];
   const events = m.events;
   let t = events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0);
@@ -238,7 +281,7 @@ export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEve
     t += eventTicks(events[i]);
     i++;
   }
-  const filler = t > end ? restsFor(t - end) : [];
+  const filler = t > end ? restsBetween(end, t, beat) : [];
   m.events = [...events.slice(0, index), ...evs, ...filler, ...events.slice(i)];
 }
 
@@ -285,7 +328,7 @@ export function normalizeMeasure(m: Measure, capacity: number): void {
 }
 
 /** 拍子が変わったとき、パートの音を新しい小節の長さに流し直す。小節をまたぐ音はタイで分ける。 */
-export function reflowPart(part: Part, capacity: number): void {
+export function reflowPart(part: Part, capacity: number, beat: number = PPQ): void {
   const all = part.measures.flatMap((m) => m.events);
   const measures: Measure[] = [];
   let cur: Measure = { id: uid(), events: [] };
@@ -336,7 +379,7 @@ export function reflowPart(part: Part, capacity: number): void {
     }
   }
   if (cur.events.length) {
-    cur.events.push(...restsFor(capacity - used));
+    cur.events.push(...restsBetween(used, capacity, beat));
     measures.push(cur);
   }
   if (!measures.length) measures.push(createMeasure(capacity));
