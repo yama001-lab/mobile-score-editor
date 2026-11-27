@@ -96,7 +96,7 @@ describe('MusicXML の取り込み', () => {
     expect(warnings.some((w) => w.includes('声部'))).toBe(true);
   });
 
-  it('3連符は近い長さに丸めて小節を埋める', () => {
+  it('3連符は連符のまま取り込む', () => {
     const tri = (s: string) => note(s, 4, 2, 'eighth', '<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>');
     const xml = wrap(`<part id="P1"><measure number="1">
       <attributes><divisions>6</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
@@ -104,8 +104,22 @@ describe('MusicXML の取り込み', () => {
     </measure></part>`, '<score-part id="P1"><part-name></part-name></score-part>');
     const { score, warnings } = parseMusicXml(xml);
     check(score);
-    const notes = score.parts[0].measures[0].events.filter((e) => e.kind === 'note');
-    expect(notes.map((n) => n.kind === 'note' && n.pitches[0].step)).toContain('F');
+    const evs = score.parts[0].measures[0].events;
+    expect(evs.map((n) => n.kind === 'note' && n.pitches[0].step)).toEqual(['C', 'D', 'E', 'F']);
+    expect(evs.slice(0, 3).every((n) => n.duration === '8' && n.tuplet?.actual === 3 && n.tuplet.normal === 2)).toBe(true);
+    expect(evs[3].tuplet).toBeUndefined();
+    expect(warnings.some((w) => w.includes('連符'))).toBe(false);
+  });
+
+  it('割り切れない連符（7連符）は近い長さに丸めて小節を埋める', () => {
+    const sep = (s: string) => note(s, 4, 1, '16th', '<time-modification><actual-notes>7</actual-notes><normal-notes>4</normal-notes></time-modification>');
+    const xml = wrap(`<part id="P1"><measure number="1">
+      <attributes><divisions>7</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+      ${['C', 'D', 'E', 'F', 'G', 'A', 'B'].map(sep).join('')}${note('C', 5, 7, 'quarter')}
+    </measure></part>`, '<score-part id="P1"><part-name></part-name></score-part>');
+    const { score, warnings } = parseMusicXml(xml);
+    check(score);
+    expect(score.parts[0].measures[0].events.some((e) => e.tuplet)).toBe(false);
     expect(warnings.some((w) => w.includes('連符'))).toBe(true);
   });
 

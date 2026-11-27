@@ -39,7 +39,7 @@ export class Player {
       while (ni < sched.notes.length && sched.notes[ni].time < horizon) {
         const n = sched.notes[ni++];
         // 同じ高さの音が続くとき聞き分けられるよう、ほんの少し短くする
-        const v = playNote(n.instrument, n.midi, t0 + n.time, Math.max(0.05, n.duration - 0.02), 0.75);
+        const v = playNote(n.instrument, n.midi, t0 + n.time, Math.max(0.05, n.duration - 0.02), n.velocity ?? 0.75);
         if (v) this.voices.push(v);
       }
       if (this.voices.length > 200) this.voices.splice(0, this.voices.length - 200);

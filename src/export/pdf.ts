@@ -27,9 +27,6 @@ function titleImage(score: Score): string {
     g.textAlign = 'right';
     g.fillText(score.composer, PAGE_W - 24, TOP + 72);
   }
-  g.textAlign = 'left';
-  g.font = '12px serif';
-  g.fillText(`♩ = ${score.tempo}`, 24, TOP + 72);
   return canvas.toDataURL('image/png');
 }
 
@@ -71,6 +68,7 @@ export async function exportPdf(score: Score): Promise<void> {
       const texts: TextItem[] = [];
       renderPage(div, score, pages[i], { ...opts, textSink: (t) => texts.push(t) }, i, TOP);
       const svg = div.querySelector('svg')!;
+      ptFontSizesToPx(svg);
       await doc.svg(svg, { x: 0, y: 0, width: PT_W, height: PT_H });
       for (const t of texts) {
         const img = textImage(t);
@@ -88,6 +86,14 @@ export async function exportPdf(score: Score): Promise<void> {
   } finally {
     holder.remove();
   }
+}
+
+/** VexFlow は文字の大きさを "13pt" で書くが、svg2pdf.js は pt を読めず大きさ0になる（テンポや小節番号が消える）ので px に直す */
+function ptFontSizesToPx(svg: SVGSVGElement) {
+  svg.querySelectorAll<SVGElement>('[font-size]').forEach((el) => {
+    const m = /^([\d.]+)pt$/.exec(el.getAttribute('font-size') ?? '');
+    if (m) el.setAttribute('font-size', `${(Number(m[1]) * 4) / 3}px`);
+  });
 }
 
 function downloadBlob(blob: Blob, name: string) {

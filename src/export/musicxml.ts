@@ -3,6 +3,7 @@ import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
 import { Clef, MusicEvent, Score, eventTicks, tempoMarkAt } from '../model/score';
 import { parseChord, splitSyllable } from '../model/texts';
+import { MarksXml, marksXml } from './musicxml-marks';
 
 const TYPE_NAMES: Record<DurationType, string> = {
   w: 'whole', h: 'half', q: 'quarter', '8': 'eighth', '16': '16th', '32': '32nd',
@@ -47,6 +48,7 @@ export function toMusicXml(score: Score): string {
   score.parts.forEach((p, i) => out.push(`<score-part id="P${i + 1}"><part-name>${esc(p.name)}</part-name></score-part>`));
   out.push('</part-list>');
 
+  const marks: MarksXml = marksXml(score);
   score.parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
     let tiedFromPrev = new Set<string>();
@@ -79,15 +81,25 @@ export function toMusicXml(score: Score): string {
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>`
           + `<per-minute>${tempo}</per-minute></metronome></direction-type><sound tempo="${tempo}"/></direction>`);
       }
-      for (const ev of m.events) {
+      m.events.forEach((ev, ei) => {
         const dur = eventTicks(ev);
-        const dots = '<dot/>'.repeat(ev.dots);
+        // 連符：<time-modification> と、頭と終わりに <tuplet>
+        const t = ev.tuplet;
+        const tupStart = !!t && m.events[ei - 1]?.tuplet?.id !== t.id;
+        const tupStop = !!t && m.events[ei + 1]?.tuplet?.id !== t.id;
+        const dots = '<dot/>'.repeat(ev.dots)
+          + (t ? `<time-modification><actual-notes>${t.actual}</actual-notes><normal-notes>${t.normal}</normal-notes></time-modification>` : '');
+        const tupXml = (tupStart ? '<tuplet type="start" bracket="yes"/>' : '') + (tupStop ? '<tuplet type="stop"/>' : '');
         const before = textsBefore(ev);
         if (before) out.push(before);
+        out.push(...marks.before(ev));
         if (ev.kind === 'rest') {
-          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}</note>`);
+          const n = marks.notations(ev) + tupXml;
+          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}`
+            + `${n ? `<notations>${n}</notations>` : ''}</note>`);
+          out.push(...marks.after(ev));
           tiedFromPrev = new Set();
-          continue;
+          return;
         }
         const next = new Set<string>();
         const lyrics = lyricsXml(ev);
@@ -97,12 +109,14 @@ export function toMusicXml(score: Score): string {
           const start = !!ev.tie;
           if (start) next.add(key);
           const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
-          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '');
+          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '')
+            + (k === 0 ? marks.notations(ev) + tupXml : '');
           out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>1</voice>`
             + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}${k === 0 ? lyrics : ''}</note>`);
         });
+        out.push(...marks.after(ev));
         tiedFromPrev = next;
-      }
+      });
       out.push('</measure>');
     });
     out.push('</part>');

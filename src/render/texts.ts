@@ -118,25 +118,36 @@ export interface PartSpacing {
   verses: number;
   hasChord: boolean;
   hasText: boolean;
+  /** 強弱記号・ヘアピンがあるとき、歌詞はその下に下げる */
+  hasDynamics: boolean;
 }
+
+/** 強弱記号・ヘアピンの行の高さ（歌詞をその下に置く分） */
+const DYNAMICS_ROW = 28;
 
 export function partSpacing(score: Score): PartSpacing[] {
   return score.parts.map((part, pi) => {
     let hasChord = false;
     let hasText = false;
+    let hasDynamics = false;
+    const ids = new Set<string>();
     for (const m of part.measures) for (const e of m.events) {
       if (e.chord) hasChord = true;
       if (e.text) hasText = true;
+      if (e.dynamic) hasDynamics = true;
+      ids.add(e.id);
     }
+    if (score.spanners?.some((s) => s.kind !== 'slur' && ids.has(s.from))) hasDynamics = true;
     const verses = partVerses(score, pi);
     const rehearsal = pi === 0 && score.parts[0].measures.some((m) => m.rehearsal);
     const need = (hasChord ? 20 : 0) + (hasText ? 18 : 0) + (rehearsal ? 24 : 0);
     return {
       above: Math.max(0, need - 22),
-      below: verses ? verses * LYRIC_LINE + 8 : 0,
+      below: verses ? verses * LYRIC_LINE + 8 + (hasDynamics ? DYNAMICS_ROW : 0) : 0,
       verses,
       hasChord,
       hasText,
+      hasDynamics,
     };
   });
 }
@@ -235,7 +246,7 @@ export function drawSystemTexts(
     }
     const chordY = Math.min(top - 10, minTop - 7);
     const textY = sp.hasChord ? chordY - 19 : chordY;
-    const lyricY = Math.max(bottom + 24, maxBottom + 17);
+    const lyricY = Math.max(bottom + 24, maxBottom + 17) + (sp.hasDynamics ? DYNAMICS_ROW : 0);
     if (pi === 0) rehearsalBase = (sp.hasText ? textY : sp.hasChord ? chordY : top - 10) - 22;
 
     for (const e of list) {

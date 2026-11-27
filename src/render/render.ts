@@ -3,7 +3,7 @@
  * 描いた音符の位置（HitMap）を返し、タップ・ペン入力の当たり判定に使う。
  */
 import {
-  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Voice,
+  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Tuplet, Voice,
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
 import { Clef, MusicEvent, Score, measureCapacity, tempoMarkAt } from '../model/score';
@@ -11,6 +11,7 @@ import {
   MeasureStart, SystemTextEntry, TextFocus, TextHit, TextItem, addTextSpacers, drawSystemTexts, flushHyphens,
   newTextState, partSpacing, rehearsalWidth,
 } from './texts';
+import { SystemBox, attachArticulations, drawMarks } from './marks';
 
 export interface RenderOptions {
   /** 描画に使う論理幅（px） */
@@ -19,6 +20,8 @@ export interface RenderOptions {
   scale?: number;
   selectedId?: string | null;
   selectedPitchIndex?: number;
+  /** 範囲選択に入っている音符・休符（範囲がなければ null） */
+  rangeIds?: Set<string> | null;
   cursor?: { partIndex: number; measureIndex: number; eventIndex: number } | null;
   /** タイトルを描くか（PDFでは日本語を画像で別に描くので false） */
   drawTitle?: boolean;
@@ -86,6 +89,46 @@ interface BuiltMeasure {
   notes: StaveNote[];
   voice: Voice;
   events: MusicEvent[];
+  tuplets: Tuplet[];
+}
+
+const BEAMABLE = new Set(['8', '16', '32']);
+
+/** 連符の中で、続いている8分以下の音符を1本の連桁にする */
+function tupletBeams(events: MusicEvent[], notes: StaveNote[]): Beam[] {
+  const beams: Beam[] = [];
+  let run: StaveNote[] = [];
+  let runId: string | null = null;
+  const flush = () => {
+    if (run.length > 1) beams.push(new Beam(run, true));
+    run = [];
+  };
+  events.forEach((ev, i) => {
+    const id = ev.tuplet?.id ?? null;
+    if (id !== runId) { flush(); runId = id; }
+    if (id && ev.kind === 'note' && BEAMABLE.has(ev.duration)) run.push(notes[i]);
+    else flush();
+  });
+  flush();
+  return beams;
+}
+
+/** 連続して同じ連符 id を持つ音をまとめて VexFlow の Tuplet にする（音の長さもここで縮まる） */
+function buildTuplets(events: MusicEvent[], notes: StaveNote[]): Tuplet[] {
+  const out: Tuplet[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const t = events[i].tuplet;
+    if (!t) continue;
+    let e = i + 1;
+    while (e < events.length && events[e].tuplet?.id === t.id) e++;
+    out.push(new Tuplet(notes.slice(i, e), {
+      num_notes: t.actual,
+      notes_occupied: t.normal,
+      ratioed: false,
+    }));
+    i = e - 1;
+  }
+  return out;
 }
 
 function buildMeasure(score: Score, partIndex: number, measureIndex: number, opts: RenderOptions): BuiltMeasure {
@@ -94,7 +137,8 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
   const ts = score.timeSignature;
   const accState = new Map<number, number>();
   const notes = events.map((ev) => {
-    const selected = ev.id === opts.selectedId;
+    const inRange = !!opts.rangeIds?.has(ev.id);
+    const selected = !inRange && ev.id === opts.selectedId;
     let note: StaveNote;
     if (ev.kind === 'rest') {
       const whole = events.length === 1;
@@ -129,12 +173,15 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
     }
     if (ev.dots && !(ev.kind === 'rest' && events.length === 1)) Dot.buildAndAttach([note], { all: true });
     addTextSpacers(note, ev);
+    if (inRange) note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
+    attachArticulations(note, ev);
     return note;
   });
+  const tuplets = buildTuplets(events, notes);
   const voice = new Voice({ num_beats: ts.beats, beat_value: ts.beatType }).setMode(Voice.Mode.SOFT);
   voice.addTickables(notes);
-  return { notes, voice, events };
+  return { notes, voice, events, tuplets };
 }
 
 /** 小節ごとの必要な幅（音符部分のみ） */
@@ -308,11 +355,14 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       ctx.fillText(score.composer, opts.width - MARGIN_X - cw, topMargin + 72);
     }
     ctx.restore();
-    tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
   }
+  // テンポはPDFでも楽譜と同じ図形で描く（タイトルは画像で載せるが、♩はフォントによって欠けるため）
+  if (page.first) tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
 
   const allNotes = new Map<string, { note: StaveNote; system: number }>();
   const ties: { from: string; to: string }[] = [];
+  const boxes: SystemBox[] = [];
+  const partOf = new Map<string, number>();
 
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
@@ -331,6 +381,14 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       });
       const noteStart = Math.max(...staves.map((s) => s.getNoteStartX()));
       staves.forEach((s) => s.setNoteStartX(noteStart));
+      if (k === 0) {
+        boxes[si] = {
+          x0: noteStart - 4,
+          x1: x + sys.widths.reduce((a, b) => a + b, 0) - 4,
+          tops: staves.map((s) => s.getYForLine(0)),
+          bottoms: staves.map((s) => s.getYForLine(4)),
+        };
+      }
       staves.forEach((s) => s.setContext(ctx).draw());
       const mark = mi > 0 ? tempoMarkAt(score, mi) : null;
       measureStarts.push({ measureIndex: mi, x: k === 0 ? noteStart - 4 : x + 6, topLineY: staves[0].getYForLine(0) });
@@ -348,11 +406,14 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
 
       built.forEach((b, pi) => {
         const stave = staves[pi];
-        const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note'), {
+        // 連符の音は連符ごとに連桁でつなぎ、それ以外は拍ごとに自動でつなぐ
+        const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note' && !b.events[i].tuplet), {
           groups: Beam.getDefaultBeamGroups(`${score.timeSignature.beats}/${score.timeSignature.beatType}`),
         });
+        beams.push(...tupletBeams(b.events, b.notes));
         b.voice.draw(ctx, stave);
         beams.forEach((bm) => bm.setContext(ctx).draw());
+        b.tuplets.forEach((t) => t.setContext(ctx).draw());
 
         const evHits: EventHit[] = b.notes.map((n, i) => {
           const nx = n.getAbsoluteX();
@@ -381,11 +442,23 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
             partIndex: pi, measureIndex: mi, ev, note: b.notes[i],
             topLineY: hit.topLineY, bottomLineY: hit.topLineY + hit.lineSpacing * 4,
           });
+          partOf.set(ev.id, pi);
           if (ev.kind === 'note' && ev.tie) {
             const next = nextEvent(score, pi, mi, i);
             if (next && next.kind === 'note') ties.push({ from: ev.id, to: next.id });
           }
         });
+
+        // 範囲選択の帯
+        const inRange = evHits.filter((h) => opts.rangeIds?.has(h.id));
+        if (inRange.length) {
+          const l = Math.max(inRange[0].left, inRange[0].x - 12);
+          const r = inRange[inRange.length - 1].right;
+          ctx.save();
+          ctx.setFillStyle('rgba(21,101,192,0.12)');
+          ctx.fillRect(l, hit.topLineY - 14, r - l, hit.lineSpacing * 4 + 28);
+          ctx.restore();
+        }
 
         // 入力位置（カーソル）
         const c = opts.cursor;
@@ -439,6 +512,8 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       if (b) new StaveTie({ first_note: null, last_note: b.note, first_indices: last, last_indices: last }).setContext(ctx).draw();
     }
   }
+
+  drawMarks(ctx, score, allNotes, boxes, partOf);
 
   return { hits, tempoHits, textHits, height };
 }
