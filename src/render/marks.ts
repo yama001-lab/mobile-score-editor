@@ -128,6 +128,8 @@ function drawHairpin(ctx: Ctx, kind: 'cresc' | 'dim', x1: number, x2: number, y:
 /** 強弱記号・ヘアピン・スラーをまとめて描く（ページ内の音符だけ） */
 export function drawMarks(
   ctx: Ctx, score: Score, placed: Map<string, PlacedNote>, boxes: SystemBox[], partOf: Map<string, number>,
+  /** このページに描く小節の範囲。両端がページの外で、ページ全体にかかるスパナーも描くために使う */
+  span?: { first: number; last: number },
 ): void {
   // 強弱記号
   const dynWidth = new Map<string, number>();
@@ -143,16 +145,17 @@ export function drawMarks(
   for (const r of resolveSpanners(score)) {
     const a = placed.get(r.from.ev.id);
     const b = placed.get(r.to.ev.id);
-    if (!a && !b) continue;
+    // 両端ともページの外：ページ全体にかかるときだけ、全部の段に線を引く
+    if (!a && !b && !(span && r.from.loc.measureIndex < span.first && r.to.loc.measureIndex > span.last)) continue;
     const pi = r.partIndex;
-    const sysA = a?.system ?? b!.system;
-    const sysB = b?.system ?? a!.system;
+    const sysA = a?.system ?? b?.system ?? 0;
+    const sysB = b?.system ?? a?.system ?? boxes.length - 1;
     // 別の段（またはページ外）にまたがるときは段ごとに分けて描く
     const segments: { sys: number; from?: StaveNote; to?: StaveNote }[] = [];
     if (a && b && sysA === sysB) segments.push({ sys: sysA, from: a.note, to: b.note });
     else {
       if (a) segments.push({ sys: sysA, from: a.note });
-      for (let s = (a ? sysA + 1 : 0); s < (b ? sysB : boxes.length); s++) if (a || b) segments.push({ sys: s });
+      for (let s = (a ? sysA + 1 : 0); s < (b ? sysB : boxes.length); s++) segments.push({ sys: s });
       if (b) segments.push({ sys: sysB, to: b.note });
     }
     for (const seg of segments) {
