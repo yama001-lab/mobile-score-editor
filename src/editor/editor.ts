@@ -11,6 +11,7 @@ import {
   beatTicks, ensureVoice, eventAt, eventTicks, findEvent, makeNote, makeRest, makeTupletGroup, measureCapacity, measureEvents,
   measureTicks, normalizeMeasure, overwriteAt, overwriteInTuplet, restsFor, splitRestAt, tickOfIndex, TimeSignature, tupletRange,
   voiceEvents, capacityAt, keyAt, measureAttrsAt, measureStartTick, reflowMeasures, shiftMeasureMarks, timeSigAt, updateMeasureAttrs,
+  GraceNote, JumpKind, clefAt,
 } from '../model/score';
 import { Interval, transposeKey, transposePitch } from '../model/transpose';
 import { Articulation, Dynamic, SpannerKind } from '../model/score';
@@ -336,7 +337,8 @@ export class Editor {
   }
 
   private defaultOctave() {
-    const clef = this.score.parts[this.cursor.partIndex]?.clef;
+    const part = this.score.parts[this.cursor.partIndex];
+    const clef = part ? clefAt(part, this.cursor.measureIndex) : undefined;
     return clef === 'bass' ? 3 : clef === 'alto' ? 4 : 4;
   }
 
@@ -765,6 +767,64 @@ export class Editor {
     });
   }
 
+  // ---------- 装飾音 ----------
+
+  /**
+   * 選んだ音符の前に装飾音を1つ足す（入力モードでは直前に入れた音符。MuseScore と同じ）。
+   * 高さは本音符のいちばん上の音の1つ上（調号どおり）。足したあと shiftGrace() で上下に動かせる。
+   */
+  addGrace(slash: boolean, duration: GraceNote['duration'] = '8') {
+    const loc = this.selectedLocation;
+    if (!loc || this.selected?.kind !== 'note') return;
+    this.mutate(() => {
+      const note = eventAt(this.score, loc) as NoteEvent;
+      const top = note.pitches[note.pitches.length - 1];
+      const p = fromDiatonic(diatonicIndex(top) + 1);
+      p.alter = keyAlter(this.keyOf(loc.measureIndex), p.step);
+      (note.graces ??= []).push({ pitches: [p], duration, ...(slash ? { slash: true } : {}) });
+    });
+  }
+
+  /** 選んだ音符のいちばん後ろ（本音符のすぐ前）の装飾音を steps 白鍵ぶん上下に動かす */
+  shiftGrace(steps: number) {
+    const loc = this.selectedLocation;
+    const ev = this.selected;
+    if (!loc || ev?.kind !== 'note' || !ev.graces?.length) return;
+    this.mutate(() => {
+      const note = eventAt(this.score, loc) as NoteEvent;
+      const g = note.graces![note.graces!.length - 1];
+      g.pitches = g.pitches.map((p) => {
+        const np = fromDiatonic(diatonicIndex(p) + steps);
+        np.alter = keyAlter(this.keyOf(loc.measureIndex), np.step);
+        return np;
+      }).sort(comparePitch);
+    }, 'grace-shift');
+  }
+
+  /** いちばん後ろの装飾音の臨時記号（同じものをもう一度で調号どおり） */
+  setGraceAccidental(alter: number) {
+    const loc = this.selectedLocation;
+    const ev = this.selected;
+    if (!loc || ev?.kind !== 'note' || !ev.graces?.length) return;
+    this.mutate(() => {
+      const note = eventAt(this.score, loc) as NoteEvent;
+      const g = note.graces![note.graces!.length - 1];
+      g.pitches = g.pitches.map((p) => ({ ...p, alter: p.alter === alter ? keyAlter(this.keyOf(loc.measureIndex), p.step) : alter }));
+    });
+  }
+
+  /** 装飾音をすべて消す（last=true ならいちばん後ろの1つだけ） */
+  removeGraces(last = false) {
+    const loc = this.selectedLocation;
+    const ev = this.selected;
+    if (!loc || ev?.kind !== 'note' || !ev.graces?.length) return;
+    this.mutate(() => {
+      const note = eventAt(this.score, loc) as NoteEvent;
+      if (last) note.graces!.pop();
+      if (!last || !note.graces!.length) delete note.graces;
+    });
+  }
+
   // ---------- 範囲選択・コピー・貼り付け ----------
 
   /** 範囲に入っている音符・休符の id（描画用） */
@@ -993,11 +1053,14 @@ export class Editor {
     const r = this.range!;
     this.mutate(() => {
       for (const note of rangeNotes(this.score, r)) {
-        note.pitches = note.pitches.map((p) => {
+        const key = this.keyOf(findEvent(this.score, note.id)?.measureIndex ?? 0);
+        const move = (ps: Pitch[]) => ps.map((p) => {
           const np = fromDiatonic(diatonicIndex(p) + steps);
-          np.alter = keyAlter(this.keyOf(findEvent(this.score, note.id)?.measureIndex ?? 0), np.step);
+          np.alter = keyAlter(key, np.step);
           return np;
         }).sort(comparePitch);
+        note.pitches = move(note.pitches);
+        for (const g of note.graces ?? []) g.pitches = move(g.pitches);
       }
       this.range = { ...r };
       this.rangeAnchor = { ...r };
@@ -1069,6 +1132,13 @@ export class Editor {
   removeMeasure(index = this.cursor.measureIndex) {
     if (this.score.parts[0].measures.length <= 1) return;
     this.mutate(() => {
+      // 消す小節で音部記号が変わっていたら、次の小節へ引き継ぐ（次の小節に指定がなければ）
+      for (const p of this.score.parts) {
+        const c = p.measures[index]?.clef;
+        const next = p.measures[index + 1];
+        if (c && next && !next.clef) next.clef = c;
+        if (index === 0 && next?.clef) { p.clef = next.clef; delete next.clef; }
+      }
       for (const p of this.score.parts) p.measures.splice(index, 1);
       // 消した小節のテンポ・拍子・調号の変更は次の小節へ引き継ぐ（後ろにすでにあればそちらを優先）
       shiftMeasureMarks(this.score, index, -1);
@@ -1288,6 +1358,7 @@ export class Editor {
           for (const ev of measureEvents(m)) {
             if (ev.kind !== 'note' || (ids && !ids.has(ev.id))) continue;
             ev.pitches = ev.pitches.map((p) => transposePitch(p, iv)).sort(comparePitch);
+            for (const g of ev.graces ?? []) g.pitches = g.pitches.map((p) => transposePitch(p, iv)).sort(comparePitch);
           }
       });
     });
@@ -1322,9 +1393,57 @@ export class Editor {
 
   setPartClef(index: number, clef: Clef) {
     this.mutate(() => {
-      this.score.parts[index].clef = clef;
+      const part = this.score.parts[index];
+      part.clef = clef;
+      delete part.measures[0]?.clef;
+      dropRedundantClefs(part);
     });
   }
+
+  /**
+   * パートの measure 小節目から音部記号を変える（音の高さは変えない。書く位置が変わる）。
+   * null なら途中の変更を消して前の音部記号に戻す。1小節目ならパートの音部記号を変える。
+   */
+  setClefAt(partIndex: number, measure: number, clef: Clef | null) {
+    const part = this.score.parts[partIndex];
+    if (!part) return;
+    if (measure === 0) { if (clef) this.setPartClef(partIndex, clef); return; }
+    this.mutate(() => {
+      const m = part.measures[measure];
+      if (!m) return;
+      if (clef) m.clef = clef;
+      else delete m.clef;
+      dropRedundantClefs(part);
+    });
+  }
+
+  /** その小節で有効な音部記号 */
+  clefAt(partIndex: number, measure: number): Clef {
+    return clefAt(this.score.parts[partIndex], measure);
+  }
+
+  /** セーニョ・コーダ・To Coda・Fine・D.C./D.S. を付け外しする（全パート共通） */
+  setFlow(measure: number, patch: { segno?: boolean; coda?: boolean; toCoda?: boolean; fine?: boolean; jump?: JumpKind | null }) {
+    this.mutate(() => {
+      updateMeasureAttrs(this.score, measure, (a) => {
+        if ('segno' in patch) a.segno = patch.segno || undefined;
+        if ('coda' in patch) a.coda = patch.coda || undefined;
+        if ('toCoda' in patch) a.toCoda = patch.toCoda || undefined;
+        if ('fine' in patch) a.fine = patch.fine || undefined;
+        if ('jump' in patch) a.jump = patch.jump || undefined;
+      });
+    });
+  }
+}
+
+/** 前の小節と同じ音部記号の指定（意味のない変更）を消す */
+function dropRedundantClefs(part: { clef: Clef; measures: Measure[] }) {
+  let cur = part.clef;
+  part.measures.forEach((m, i) => {
+    if (!m.clef) return;
+    if (m.clef === cur && i > 0) delete m.clef;
+    else cur = m.clef;
+  });
 }
 
 function decomposeRests(ticks: number): MusicEvent[] {

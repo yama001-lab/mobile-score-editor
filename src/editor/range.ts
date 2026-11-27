@@ -149,9 +149,16 @@ function cutEvent(ev: MusicEvent, len: number, keepId: boolean, tieOut: boolean)
     if (c.kind === 'note') {
       if (i < ds.length - 1 || tieOut) c.tie = true;
       else delete c.tie;
+      if (i > 0) delete c.graces;
     }
     return c;
   });
+}
+
+/** 分けた音の後ろのかけらには、装飾音を付けない（装飾音は音の頭にだけ付く） */
+function dropGraces(evs: MusicEvent[]): MusicEvent[] {
+  for (const e of evs) if (e.kind === 'note') delete e.graces;
+  return evs;
 }
 
 /** 声部の tick の位置で音を2つに分け、そこが音の区切りになるようにする（音符はタイでつなぐ） */
@@ -166,7 +173,7 @@ export function splitPartAt(part: Part, tick: number, g: Grid, voice = 0): void 
     const len = eventTicks(ev);
     if (t < tick && tick < t + len) {
       const left = cutEvent(ev, tick - t, true, true);
-      const right = cutEvent(ev, t + len - tick, false, ev.kind === 'note' && !!ev.tie);
+      const right = dropGraces(cutEvent(ev, t + len - tick, false, ev.kind === 'note' && !!ev.tie));
       events.splice(i, 1, ...left, ...right);
       return;
     }

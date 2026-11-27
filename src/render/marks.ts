@@ -4,6 +4,7 @@
  */
 import { Articulation as VfArticulation, Glyph, Modifier, Renderer, StaveNote } from 'vexflow/bravura';
 import { resolveSpanners } from '../model/marks';
+import { drawLineSpanner } from './notation';
 import { Articulation, Dynamic, MusicEvent, Score, measureEvents } from '../model/score';
 
 type Ctx = ReturnType<Renderer['getContext']>;
@@ -142,7 +143,13 @@ export function drawMarks(
     dynWidth.set(ev.id, drawDynamic(ctx, ev.dynamic, headX(pn.note), y));
   }
 
-  for (const r of resolveSpanners(score)) {
+  const resolved = resolveSpanners(score);
+  const dynParts = new Set<number>();
+  score.parts.forEach((part, pi) => {
+    if (part.measures.some((m) => measureEvents(m).some((e) => e.dynamic))) dynParts.add(pi);
+  });
+  for (const r of resolved) if (r.spanner.kind === 'cresc' || r.spanner.kind === 'dim') dynParts.add(r.partIndex);
+  for (const r of resolved) {
     const a = placed.get(r.from.ev.id);
     const b = placed.get(r.to.ev.id);
     // 両端ともページの外：ページ全体にかかるときだけ、全部の段に線を引く
@@ -173,6 +180,23 @@ export function drawMarks(
         const y1 = seg.from ? slurEndY(seg.from, above) : (seg.to ? slurEndY(seg.to, above) : edgeY);
         const y2 = seg.to ? slurEndY(seg.to, above) : y1;
         drawSlur(ctx, x1, y1, x2, y2, above);
+      } else if (r.spanner.kind === '8va' || r.spanner.kind === '8vb' || r.spanner.kind === 'pedal') {
+        const notes = [seg.from, seg.to].filter((n): n is StaveNote => !!n);
+        const kind = r.spanner.kind;
+        let y: number;
+        if (kind === '8va') {
+          y = box.tops[pi] - 16;
+          for (const n of notes) y = Math.min(y, Math.min(...n.getYs(), n.getStemDirection() === 1 && !n.isRest() ? n.getStemExtents().topY : Infinity) - 12);
+        } else if (kind === '8vb') {
+          y = box.bottoms[pi] + 26;
+          for (const n of notes) y = Math.max(y, Math.max(...n.getYs(), n.getStemDirection() === -1 && !n.isRest() ? n.getStemExtents().topY : -Infinity) + 16);
+        } else {
+          // 強弱記号・ヘアピンのあるパートではその下、なければ五線（と低い音）のすぐ下
+          y = dynamicsY(box, pi, notes) + (dynParts.has(pi) ? 22 : 0);
+        }
+        const x1 = seg.from ? headX(seg.from) - 4 : box.x0;
+        const x2 = seg.to ? headX(seg.to) + 10 : box.x1;
+        drawLineSpanner(ctx, kind, x1, Math.max(x1 + 14, x2), y, !seg.from, !seg.to);
       } else {
         const notes = [seg.from, seg.to].filter((n): n is StaveNote => !!n);
         const y = dynamicsY(box, pi, notes);

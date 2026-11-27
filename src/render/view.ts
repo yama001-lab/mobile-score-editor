@@ -9,7 +9,7 @@
  * PDF書き出しは今までどおり renderPage でページごとに描く。
  */
 import { resolveSpanners } from '../model/marks';
-import { Score, measureEvents, voiceEvents } from '../model/score';
+import { Score, clefAt, measureEvents, voiceEvents } from '../model/score';
 import { partSpacing } from './texts';
 import {
   MeasureHit, RenderOptions, RenderResult, SystemLayout, TITLE_HEIGHT, layoutSystems, renderPage, systemHeight,
@@ -143,6 +143,8 @@ export class ScoreView {
       measures: sys.measures,
       widths: sys.widths,
       data: score.parts.map((p) => p.measures.slice(first, last + 1)),
+      // 前の段で変えた音部記号もこの段の見た目に効く
+      clefs: score.parts.map((p) => clefAt(p, first)),
       // 隣の小節は、段をまたぐタイに関わる音（前の小節の最後の音・次の小節の最初の音）だけ
       edges: score.parts.map((p) => [0, 1].map((v) => {
         const prev = p.measures[first - 1] ? voiceEvents(p.measures[first - 1], v) : [];
