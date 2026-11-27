@@ -151,6 +151,13 @@ export function parseMusicXml(xml: string): ImportResult {
       let closeVolta = false;
       for (const c of kids(mEl)) {
         switch (c.localName) {
+          case 'print': {
+            // 改行・改ページは、前の小節のあとで切るものとして持つ
+            if (!first || mi === 0) break;
+            if (c.getAttribute('new-page') === 'yes') attrOf(mi - 1).pageBreak = true;
+            else if (c.getAttribute('new-system') === 'yes') attrOf(mi - 1).systemBreak = true;
+            break;
+          }
           case 'barline': {
             if (!first) break;
             const rep = kid(c, 'repeat');

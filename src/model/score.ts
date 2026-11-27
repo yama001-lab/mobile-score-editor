@@ -136,6 +136,16 @@ export interface MeasureAttrs {
   repeatTimes?: number;
   /** 番号付きカッコ（1番・2番）。この小節が何番のときに弾かれるか。続く小節で同じ番号なら1つのカッコ */
   volta?: number[];
+  /** この小節のあとで改行する（次の小節から新しい段） */
+  systemBreak?: boolean;
+  /** この小節のあとで改ページする（PDF。画面では改行として表示） */
+  pageBreak?: boolean;
+}
+
+/** 曲全体のレイアウト設定 */
+export interface ScoreLayout {
+  /** 1段に並べる小節の数（省略時は横幅に合わせて自動） */
+  measuresPerSystem?: number;
 }
 
 export interface Score {
@@ -160,6 +170,8 @@ export interface Score {
   tuning?: number;
   /** スラー・クレッシェンドなど。消えた音符を指すものは無視する（src/model/marks.ts） */
   spanners?: Spanner[];
+  /** 1段の小節数など。改行・改ページは小節ごとに measureAttrs で持つ */
+  layout?: ScoreLayout;
   createdAt: number;
   updatedAt: number;
 }
