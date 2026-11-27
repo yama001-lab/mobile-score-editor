@@ -3,7 +3,7 @@
  * 簡単なものだけ：強さは音量の倍率、スタッカートは長さを半分、フェルマータは音の長さぶん止まる。
  */
 import { flatEvents, resolveSpanners } from '../model/marks';
-import { Dynamic, MusicEvent, Score, eventTicks } from '../model/score';
+import { Dynamic, GraceNote, MusicEvent, Score, eventTicks } from '../model/score';
 
 /** 強弱記号ごとの強さ（playNote の velocity） */
 export const DYNAMIC_LEVELS: Record<Exclude<Dynamic, 'sfz' | 'fp'>, number> = {
@@ -34,7 +34,7 @@ export class DynamicsTrack {
     // 強さは声部1でたどる（声部2の音は同じ時刻の声部1の強さで鳴らす。声部2の強弱記号はその音だけ）
     const seq = flatEvents(score, partIndex);
     const hairpins = resolveSpanners(score)
-      .filter((r) => r.partIndex === partIndex && r.voice === 0 && r.spanner.kind !== 'slur')
+      .filter((r) => r.partIndex === partIndex && r.voice === 0 && (r.spanner.kind === 'cresc' || r.spanner.kind === 'dim'))
       .sort((a, b) => a.from.index - b.from.index);
     let cur = DEFAULT_LEVEL;
     let hp = 0;
@@ -117,4 +117,22 @@ export function fermataPauses(
     });
   }
   return [...map.values()];
+}
+
+/** 短前打音（斜線付き）1つの長さ（秒） */
+const ACCIACCATURA_SEC = 0.07;
+
+/**
+ * 装飾音を鳴らす時刻（本音符の頭からの秒）と長さ。本音符の長さ mainSec の半分までに収める。
+ * 短前打音はごく短く、長前打音は書かれた音価の割合（8分＝本音符の半分、16分＝4分の1）で鳴らす。
+ */
+export function graceTimes(graces: GraceNote[], mainSec: number): { offsets: number[]; lengths: number[]; total: number } {
+  const want = graces.map((g) => (g.slash ? ACCIACCATURA_SEC : mainSec * (g.duration === '8' ? 0.5 : 0.25) / graces.length));
+  const sum = want.reduce((a, b) => a + b, 0);
+  const k = sum > mainSec / 2 ? mainSec / 2 / sum : 1;
+  const lengths = want.map((w) => w * k);
+  const offsets: number[] = [];
+  let t = 0;
+  for (const l of lengths) { offsets.push(t); t += l; }
+  return { offsets, lengths, total: t };
 }

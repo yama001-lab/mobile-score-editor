@@ -44,6 +44,27 @@
 - 最後のバックアップ時刻は `score-editor:backup-at`。そのあと書き換えがあり7日たったら上に声かけを出す（`shouldRemindBackup()`）
 - 保存に失敗したら（容量いっぱいなど）上のバーで知らせる。画面を離れるときは待っている自動保存をすぐ済ませる
 
+## 描画（画面とPDF）
+
+- PDF は `renderPage()` でページごとに描く。画面は `src/render/view.ts` の `ScoreView` が段（システム）ごとに別の SVG（`.score-system`）に描き、
+  見た目が変わった段だけを描き直す（200小節の大譜表でも1打鍵あたり数ミリ秒）。
+  段を描き直すかは「その段の見た目を決めるもの」を文字列にしたキー（`ScoreView.systemKey`）で決める。
+  パートの音符以外の `Score` の項目（タイトル・テンポ・小節ごとの記号など）・描く幅・倍率が変わるとすべて描き直す。
+  **段の見た目に効く新しい情報を足すとき**：`Score` の直下に置けば自動でキーに入る。
+  段の外の音や別の段とつながるもの（スパナーのように id で指すもの）を足すときは、`systemKey` に足す
+- 小節の幅は `measureContentWidth()` が小節の中身・拍子・調号・長さをキーに覚えておく
+- 段・ページをまたぐタイとスラー・ヘアピンは、それぞれの段（ページ）で自分の分だけ描く
+
+### レイアウト（改行・改ページ・1段の小節数）
+
+- 改行・改ページは `MeasureAttrs.systemBreak` / `pageBreak`（その小節の**あと**で切る）。`Editor.setBreak()` / `toggleSystemBreak()`
+- 1段の小節数は `Score.layout.measuresPerSystem`（省略で自動）。`Editor.setMeasuresPerSystem()`
+- 段の分け方は `render.ts` の `breakSystems(score, fits)` だけが決める（改行の指定 → 小節数の指定 → 幅の判定 `fits`）。
+  幅の計算は `layoutSystems()`、ページ分けは `paginate()`（`SystemLayout.pageBreak` で次のページへ）。画面とPDFは同じ処理
+- 指定どおりだと入りきらない段は幅を比例で縮める。小節数指定時の最後の段は、上の段と小節の幅がそろうように広げる
+- 画面だけ `RenderOptions.showBreaks` で段の右端に目印（↵・紙＋破線）を描く。PDFには出さない
+- MusicXML では次の小節の `<print new-system="yes"/>` / `<print new-page="yes"/>`
+
 ## 画面の配置
 
 - `header.topbar`：アプリ全体の操作（ファイル・再生・元に戻す・設定・書き出し）
@@ -110,6 +131,22 @@
 - 範囲コピーなどで音符を複製するときは、id を付け直すならスパナーも付け直すこと
 - スラーなどは同じパートの同じ声部の音どうしをつなぐ（`flatEvents(score, part, voice)` の並びでたどる。声部をまたぐものは無効）。
   `ResolvedSpanner.voice` を持つ。2声部の小節では声部1のスラーは上、声部2は下に描く。再生のヘアピンは声部1のものだけ使う
+
+### 記号 第2弾（装飾音・オクターブ記号・ペダル・D.S.／コーダ・途中の音部記号）
+- 装飾音：`NoteEvent.graces`（`GraceNote { pitches, duration: '8'|'16', slash }`、左から順）。小節の長さには数えない。
+  `Editor.addGrace(slash)` / `shiftGrace()` / `setGraceAccidental()` / `removeGraces()` は選んだ音符（入力モードでは直前に入れた音符）に効く。
+  音を分けるとき（`reflowEvents`・`range.ts` の `cutEvent`）は最初のかけらだけに残す。
+  描画は `src/render/notation.ts` の `attachGraces()`（VexFlow の `GraceNoteGroup`）、再生は `expression.ts` の `graceTimes()`（本音符の頭から鳴らし、本音符を遅らせる）
+- オクターブ記号・ペダル：スパナーの種類 `'8va' | '8vb' | 'pedal'`。音符は書いた高さのまま持ち、鳴らす高さは `ottavaShifts()`（同じパートのもう一方の声部にも時刻で効かせる）。
+  同じ組（`spannerGroup()`：スラー／ヘアピン／オクターブ／ペダル）どうしは重ねない。描画は `notation.ts` の `drawLineSpanner()`。
+  ペダルは再生で、踏んでいる間に鳴り始めた同じパートの音をペダルを上げるまで伸ばす。8va がかかるいちばん上のパートの小節ではテンポ表記などを上げる
+- D.C./D.S.・セーニョ・コーダ・To Coda・Fine：`MeasureAttrs` の `segno` / `coda`（小節の頭）、`toCoda` / `fine` / `jump`（小節の終わり、`JumpKind`）。
+  `playOrder()` がたどる（戻るのは1回、戻ったあとはリピートせず最後のカッコだけ、Fine で終わり、To Coda から次のコーダ記号の小節へ）。
+  編集は `Editor.setFlow()`、画面は小節の記号ダイアログ。描画は `drawFlowMarks()`（文字はラテン文字だけなので PDF でもそのまま）
+- 途中の音部記号：`Measure.clef`（パートごと。省略＝前のまま）。必ず `clefAt(part, mi)` / `clefChangeAt()` で読む（`part.clef` は曲頭の音部記号）。
+  `Editor.setClefAt()`。小節を消すと次の小節へ引き継ぎ、拍子を変えて引き直すと同じ時刻の小節へ移る（`reflowMeasures`）
+- MusicXML：`<grace>`、途中の `<clef>`、`<octave-shift>`、`<pedal>`、`<segno>`・`<coda>`・`<sound dalsegno/dacapo/fine/tocoda>`。
+  取り込みでは「D.S. al Coda」などの `<words>` を `readFlowWords()` で小節の記号に読み替える
 
 ### 連符
 - 音符・休符の `tuplet?: { id, actual, normal }`（3連符なら 3:2）。同じ `id` が小節内で続いた音が1つの連符。

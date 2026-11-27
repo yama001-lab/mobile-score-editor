@@ -7,7 +7,7 @@ import {
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
 import {
-  Clef, MusicEvent, Score, capacityAt, eventTicks, voiceEvents, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoMarkAt,
+  Clef, MusicEvent, Score, capacityAt, clefAt, clefChangeAt, eventTicks, voiceEvents, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoMarkAt,
   timeSigAt, timeSigChangeAt,
 } from '../model/score';
 import {
@@ -15,6 +15,11 @@ import {
   newTextState, partSpacing, rehearsalWidth,
 } from './texts';
 import { SystemBox, attachArticulations, drawMarks } from './marks';
+import { attachGraces, drawFlowMarks } from './notation';
+import { ottavaAboveMeasures } from '../model/marks';
+
+/** 8va の線の分、上の記号を上げる高さ */
+const OTTAVA_LIFT = 18;
 
 // VexFlow の小節線の種類（Barline.type）
 const BAR_SINGLE = 1;
@@ -41,6 +46,8 @@ export interface RenderOptions {
   textFocus?: TextFocus | null;
   /** 指定すると、歌詞などの文字は描かずにここへ渡す（PDFで日本語を画像にして載せるため） */
   textSink?: (item: TextItem) => void;
+  /** 改行・改ページの目印を描く（画面だけ。PDFには出さない） */
+  showBreaks?: boolean;
 }
 
 export interface EventHit {
@@ -77,12 +84,15 @@ export interface MeasureHit {
 export interface SystemLayout {
   measures: number[];
   widths: number[];
+  /** この段のあとで改ページする */
+  pageBreak?: boolean;
 }
 
 const MARGIN_X = 24;
 const PART_SPACING = 110;
 const SYSTEM_GAP = 30;
-const TITLE_HEIGHT = 90;
+/** 最初のページの上に空けるタイトルの高さ */
+export const TITLE_HEIGHT = 90;
 const COLOR_SELECTED = '#1565c0';
 /** 声部2の入力位置の色（MuseScore と同じく緑系） */
 const COLOR_VOICE2 = 'rgba(46,125,50,0.18)';
@@ -189,8 +199,10 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
   const lists = m.voice2 ? [m.events, m.voice2] : [m.events];
   const multi = lists.length > 1;
   const ts = timeSigAt(score, measureIndex);
+  const clef = clefAt(part, measureIndex);
+  const key = keyAt(score, measureIndex);
   const fullMeasure = capacityAt(score, measureIndex) >= measureCapacity(ts);
-  const acc = accidentalsFor(keyAt(score, measureIndex), lists);
+  const acc = accidentalsFor(key, lists);
   return lists.map((events, v) => {
     const stem = !multi ? undefined : v === 0 ? 1 : -1;
     const ticks: number[] = [];
@@ -205,10 +217,10 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
         // 1小節まるごとの休符は全休符の形で小節の真ん中に（弱起の小節は本当の長さで描く）
         const whole = events.length === 1 && fullMeasure;
         note = new StaveNote({
-          keys: [restKey(part.clef, multi ? (v === 0 ? 4 : -4) : 0)],
+          keys: [restKey(clef, multi ? (v === 0 ? 4 : -4) : 0)],
           duration: (whole ? 'w' : ev.duration) + 'r',
           dots: whole ? 0 : ev.dots,
-          clef: part.clef,
+          clef,
           align_center: whole,
         } as never);
       } else {
@@ -216,12 +228,13 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
           keys: ev.pitches.map((p) => `${p.step.toLowerCase()}/${p.octave}`),
           duration: ev.duration,
           dots: ev.dots,
-          clef: part.clef,
+          clef,
           ...(stem ? { stem_direction: stem } : { auto_stem: true }),
         });
         ev.pitches.forEach((p, k) => {
           if (acc.has(`${v}:${i}:${k}`)) note.addModifier(new Accidental(accidentalSymbol(p.alter)), k);
         });
+        attachGraces(note, ev, clef, key, inRange || selected ? COLOR_SELECTED : undefined);
         if (selected) {
           const pi = Math.min(opts.selectedPitchIndex ?? 0, ev.pitches.length - 1);
           if (ev.pitches.length === 1) note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
@@ -248,10 +261,14 @@ const tsSpec = (score: Score, mi: number) => {
 };
 
 /** 小節の頭に付ける記号（段の頭か途中かで変わる）を stave に足す */
-function addStartModifiers(st: Stave, score: Score, clef: Clef, mi: number, systemStart: boolean) {
+function addStartModifiers(st: Stave, score: Score, pi: number, mi: number, systemStart: boolean) {
+  const part = score.parts[pi];
   if (systemStart) {
-    st.addClef(clef).addKeySignature(keyName(keyAt(score, mi)));
+    st.addClef(clefAt(part, mi)).addKeySignature(keyName(keyAt(score, mi)));
   } else {
+    // 段の途中の音部記号の変更は小さく書く
+    const cc = clefChangeAt(part, mi);
+    if (cc) st.addClef(cc, 'small');
     const kc = keyChangeAt(score, mi);
     if (kc !== null) st.addKeySignature(keyName(kc), keyName(keyAt(score, mi - 1)));
   }
@@ -262,16 +279,38 @@ function addStartModifiers(st: Stave, score: Score, clef: Clef, mi: number, syst
 /** 小節の頭の記号の幅 */
 function modifiersWidth(score: Score, mi: number, systemStart: boolean): number {
   let w = 0;
-  for (const part of score.parts) {
+  for (let pi = 0; pi < score.parts.length; pi++) {
     const s = new Stave(0, 0, 400);
-    addStartModifiers(s, score, part.clef, mi, systemStart);
+    addStartModifiers(s, score, pi, mi, systemStart);
     w = Math.max(w, s.getNoteStartX() - s.getX());
   }
   return w + 10;
 }
 
+/**
+ * 小節の幅の覚え書き。幅は小節の中身・拍子・調号・小節の長さだけで決まるので、
+ * それを文字列にしたものをキーにして、編集のたびに全小節を組み直さないようにする。
+ */
+const widthCache = new Map<string, number>();
+
+function measureWidthKey(score: Score, mi: number): string {
+  return JSON.stringify([
+    score.parts.map((p) => [clefAt(p, mi), p.measures[mi]]), timeSigAt(score, mi), keyAt(score, mi), capacityAt(score, mi),
+  ]);
+}
+
 /** 小節ごとの必要な幅（音符部分のみ） */
 function measureContentWidth(score: Score, measureIndex: number, opts: RenderOptions): number {
+  const key = measureWidthKey(score, measureIndex);
+  const hit = widthCache.get(key);
+  if (hit !== undefined) return hit;
+  if (widthCache.size > 4000) widthCache.clear();
+  const w = computeMeasureContentWidth(score, measureIndex, opts);
+  widthCache.set(key, w);
+  return w;
+}
+
+function computeMeasureContentWidth(score: Score, measureIndex: number, opts: RenderOptions): number {
   const perPart = score.parts.map((_, p) => buildMeasure(score, p, measureIndex, opts).map((b) => b.voice));
   const f = new Formatter();
   perPart.forEach((vs) => f.joinVoices(vs));
@@ -286,42 +325,74 @@ function startModifiersWidth(score: Score, mi: number): number {
 /** 段の途中の小節で、調号・拍子の変更やリピート開始のために増える幅 */
 function midModifiersWidth(score: Score, mi: number): number {
   const a = measureAttrsAt(score, mi);
-  if (!a || (keyChangeAt(score, mi) === null && !timeSigChangeAt(score, mi) && !a.repeatStart)) return 0;
+  const clefChange = score.parts.some((p) => clefChangeAt(p, mi));
+  if (!clefChange && (!a || (keyChangeAt(score, mi) === null && !timeSigChangeAt(score, mi) && !a.repeatStart))) return 0;
   return modifiersWidth(score, mi, false);
+}
+
+/**
+ * 小節を段に分ける（幅は計算しない）。改行・改ページの指定と「1段の小節数」に従い、
+ * それ以外は fits(段の小節, 次の小節) が false になったところで改行する。
+ * 戻り値は段ごとの小節番号と、その段のあとで改ページするか。
+ */
+export function breakSystems(
+  score: Score, fits: (measures: number[], next: number) => boolean,
+): { measures: number[]; pageBreak: boolean }[] {
+  const n = score.parts[0].measures.length;
+  const per = score.layout?.measuresPerSystem;
+  const out: { measures: number[]; pageBreak: boolean }[] = [];
+  let cur: number[] = [];
+  for (let i = 0; i < n; i++) {
+    // 小節数の指定がなければ、入りきらないところで自動改行
+    if (cur.length && !per && !fits(cur, i)) { out.push({ measures: cur, pageBreak: false }); cur = []; }
+    cur.push(i);
+    const a = measureAttrsAt(score, i);
+    if (a?.systemBreak || a?.pageBreak || cur.length === per || i === n - 1) {
+      out.push({ measures: cur, pageBreak: !!a?.pageBreak && i < n - 1 });
+      cur = [];
+    }
+  }
+  return out;
 }
 
 export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[] {
   const available = opts.width - MARGIN_X * 2;
   const n = score.parts[0].measures.length;
   const content = Array.from({ length: n }, (_, i) => measureContentWidth(score, i, opts));
-  const systems: SystemLayout[] = [];
-  let cur: SystemLayout = { measures: [], widths: [] };
-  let used = 0;
-  for (let i = 0; i < n; i++) {
-    const head = cur.measures.length === 0 ? startModifiersWidth(score, i) : midModifiersWidth(score, i);
-    const w = content[i] + head;
-    if (cur.measures.length && used + w > available) {
-      systems.push(cur);
-      cur = { measures: [], widths: [] };
-      used = 0;
-      i--;
-      continue;
-    }
-    cur.measures.push(i);
-    cur.widths.push(w);
-    used += w;
-  }
-  if (cur.measures.length) systems.push(cur);
-  // 横幅いっぱいに広げる（最後の段は、半分以上埋まっているときだけ）
+  const widthOf = (mi: number, first: boolean) => content[mi] + (first ? startModifiersWidth(score, mi) : midModifiersWidth(score, mi));
+  const groups = breakSystems(score, (ms, next) =>
+    ms.reduce((sum, mi, k) => sum + widthOf(mi, k === 0), 0) + widthOf(next, false) <= available);
+  const systems: SystemLayout[] = groups.map((g) => ({
+    measures: g.measures,
+    widths: g.measures.map((mi, k) => widthOf(mi, k === 0)),
+    ...(g.pageBreak ? { pageBreak: true } : {}),
+  }));
+  const per = score.layout?.measuresPerSystem;
   systems.forEach((s, si) => {
     const total = s.widths.reduce((a, b) => a + b, 0);
-    const last = si === systems.length - 1;
-    if (last && total < available * 0.6) return;
     const head = startModifiersWidth(score, s.measures[0]);
-    const extra = (available - total) / s.widths.length;
+    // 指定どおりに並べると入りきらない段は、必要な幅の比で縮める
+    if (total > available) {
+      const k = available / total;
+      s.widths = s.widths.map((w, i) => (i === 0 ? Math.max(head + 30, w * k) : w * k));
+      const sum = s.widths.reduce((a, b) => a + b, 0);
+      if (sum > available) {
+        const rest = s.widths.slice(1).reduce((a, b) => a + b, 0);
+        const r = rest > 0 ? (available - s.widths[0]) / rest : 1;
+        s.widths = s.widths.map((w, i) => (i === 0 ? w : w * r));
+      }
+      return;
+    }
+    // 横幅いっぱいに広げる（改行で短くなった段も）。最後の段は、半分以上埋まっているときだけ。
+    // 1段の小節数を指定しているときは、最後の段も小節数の割合だけ広げて、上の段と小節の幅をそろえる
+    const last = si === systems.length - 1;
+    let target = available;
+    if (per && last) target = Math.max(total, available * Math.min(1, s.measures.length / per));
+    else if (last && total < available * 0.6) return;
+    const extra = (target - total) / s.widths.length;
     s.widths = s.widths.map((w, k) => (k === 0 ? Math.max(head + 40, w + extra) : w + extra));
     const sum = s.widths.reduce((a, b) => a + b, 0);
-    s.widths[s.widths.length - 1] += available - sum;
+    s.widths[s.widths.length - 1] += target - sum;
   });
   return systems;
 }
@@ -363,8 +434,13 @@ export function paginate(score: Score, systems: SystemLayout[], pageHeight: numb
     }
     cur.systems.push(s);
     y += h;
+    if (s.pageBreak) {
+      pages.push(cur);
+      cur = { systems: [], first: false };
+      y = topMargin;
+    }
   }
-  pages.push(cur);
+  if (cur.systems.length || !pages.length) pages.push(cur);
   return pages;
 }
 
@@ -429,6 +505,8 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   const spacing = partSpacing(score);
   const offsets = partOffsets(score);
   const textState = newTextState();
+  // 8va の線がかかる小節では、テンポ表記・セーニョなどを線の上へ上げる
+  const ottavaLift = ottavaAboveMeasures(score);
 
   if (page.first && opts.drawTitle !== false) {
     ctx.save();
@@ -450,6 +528,19 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   const boxes: SystemBox[] = [];
   const partOf = new Map<string, number>();
 
+  // 前のページ（画面では前の段）から続くタイ：終わりの半分をこのページに描く
+  const firstMi = page.systems[0]?.measures[0];
+  if (firstMi) {
+    score.parts.forEach((part) => {
+      for (const voice of [0, 1]) {
+        const prev = voiceEvents(part.measures[firstMi - 1], voice);
+        const last = prev[prev.length - 1];
+        const next = voiceEvents(part.measures[firstMi], voice)[0];
+        if (last?.kind === 'note' && last.tie && next?.kind === 'note') ties.push({ from: last.id, to: next.id });
+      }
+    });
+  }
+
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
     let x = MARGIN_X;
@@ -459,11 +550,13 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       const w = sys.widths[k];
       const attrs = measureAttrsAt(score, mi);
       const last = mi === score.parts[0].measures.length - 1;
-      const staves = score.parts.map((part, pi) => {
+      const staves = score.parts.map((_part, pi) => {
         const st = new Stave(x, sysY + offsets[pi], w);
-        addStartModifiers(st, score, part.clef, mi, k === 0);
+        addStartModifiers(st, score, pi, mi, k === 0);
         if (attrs?.repeatEnd) st.setEndBarType(BAR_REPEAT_END);
         else if (last) st.setEndBarType(BAR_END);
+        // Fine と D.C./D.S. の小節の終わりは複縦線
+        else if (attrs?.fine || attrs?.jump) st.setEndBarType(BAR_DOUBLE);
         // 次の小節で調号・拍子が変わるときは複縦線
         else if (keyChangeAt(score, mi + 1) !== null || timeSigChangeAt(score, mi + 1)) st.setEndBarType(BAR_DOUBLE);
         else st.setEndBarType(BAR_SINGLE);
@@ -491,7 +584,16 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
         let tx = k === 0 ? noteStart - 4 : x + 6;
         const rh = score.parts[0].measures[mi].rehearsal;
         if (rh) tx += rehearsalWidth(rh) + 6;
-        tempoHits.push({ ...drawTempo(ctx, tx, staves[0].getYForLine(0) - 22, mark), measure: mi });
+        tempoHits.push({ ...drawTempo(ctx, tx, staves[0].getYForLine(0) - 22 - (ottavaLift.has(mi) ? OTTAVA_LIFT : 0), mark), measure: mi });
+      }
+      // セーニョ・コーダは練習番号とテンポ表記の後ろに。D.S. などは小節の右端に
+      {
+        let fx = k === 0 ? noteStart - 4 : x + 6;
+        const rh = score.parts[0].measures[mi].rehearsal;
+        if (rh) fx += rehearsalWidth(rh) + 6;
+        const th = mark !== null ? tempoHits[tempoHits.length - 1] : null;
+        if (th) fx = th.x + th.w + 4;
+        drawFlowMarks(ctx, attrs, staves[0], fx, ottavaLift.has(mi) ? OTTAVA_LIFT : 0);
       }
 
       const built = score.parts.map((_, pi) => buildMeasure(score, pi, mi, opts));
@@ -534,7 +636,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
           x1: stave.getX() + stave.getWidth(),
           topLineY: stave.getYForLine(0),
           lineSpacing: stave.getSpacingBetweenLines(),
-          clef: score.parts[pi].clef,
+          clef: clefAt(score.parts[pi], mi),
           events: evHits,
           voices: voiceHits,
           page: pageNo,
@@ -595,6 +697,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       }
       x += w;
     });
+    if (opts.showBreaks) drawBreakMark(ctx, score, sys, x, boxes[si]?.tops[0] ?? sysY + offsets[0], sysY + sysH - SYSTEM_GAP / 2, opts.width);
     textHits.push(...drawSystemTexts(ctx, score, textEntries, measureStarts, si, textState, {
       sink: opts.textSink, focus: opts.textFocus, spacing,
     }));
@@ -604,7 +707,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   for (const t of ties) {
     const a = allNotes.get(t.from);
     const b = allNotes.get(t.to);
-    if (!a) continue;
+    if (!a && !b) continue;
     const fromEv = findById(score, t.from);
     const toEv = findById(score, t.to);
     if (!fromEv || fromEv.kind !== 'note' || !toEv || toEv.kind !== 'note') continue;
@@ -615,17 +718,49 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       if (j >= 0) { first.push(i); last.push(j); }
     });
     if (!first.length) continue;
-    if (b && b.system === a.system) {
+    if (a && b && b.system === a.system) {
       new StaveTie({ first_note: a.note, last_note: b.note, first_indices: first, last_indices: last }).setContext(ctx).draw();
     } else {
-      new StaveTie({ first_note: a.note, last_note: null, first_indices: first, last_indices: first }).setContext(ctx).draw();
+      if (a) new StaveTie({ first_note: a.note, last_note: null, first_indices: first, last_indices: first }).setContext(ctx).draw();
       if (b) new StaveTie({ first_note: null, last_note: b.note, first_indices: last, last_indices: last }).setContext(ctx).draw();
     }
   }
 
-  drawMarks(ctx, score, allNotes, boxes, partOf);
+  const lastSys = page.systems[page.systems.length - 1];
+  drawMarks(ctx, score, allNotes, boxes, partOf, page.systems.length
+    ? { first: page.systems[0].measures[0], last: lastSys.measures[lastSys.measures.length - 1] }
+    : undefined);
 
   return { hits, tempoHits, textHits, height };
+}
+
+const COLOR_BREAK = '#1565c0';
+
+/** 段の右端に、改行（↵）・改ページ（破線＋紙）の目印を描く。指定した小節のあとだけ */
+function drawBreakMark(ctx: Ctx, score: Score, sys: SystemLayout, endX: number, topY: number, bottomY: number, width: number) {
+  const a = measureAttrsAt(score, sys.measures[sys.measures.length - 1]);
+  if (!a?.systemBreak && !a?.pageBreak) return;
+  const x = endX + 5;
+  const y = topY - 4;
+  ctx.save();
+  ctx.setStrokeStyle(COLOR_BREAK);
+  ctx.setFillStyle(COLOR_BREAK);
+  ctx.setLineWidth(1.4);
+  ctx.beginPath();
+  if (a.pageBreak) {
+    // 紙の形
+    ctx.moveTo(x, y); ctx.lineTo(x + 7, y); ctx.lineTo(x + 11, y + 4); ctx.lineTo(x + 11, y + 14);
+    ctx.lineTo(x, y + 14); ctx.closePath(); ctx.stroke();
+    // 段の下に破線
+    for (let dx = MARGIN_X; dx < width - MARGIN_X; dx += 10) {
+      ctx.beginPath(); ctx.moveTo(dx, bottomY); ctx.lineTo(Math.min(dx + 5, width - MARGIN_X), bottomY); ctx.stroke();
+    }
+  } else {
+    // ↵
+    ctx.moveTo(x + 10, y); ctx.lineTo(x + 10, y + 8); ctx.lineTo(x + 2, y + 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y + 8); ctx.lineTo(x + 4, y + 5); ctx.lineTo(x + 4, y + 11); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
 }
 
 /** 番号付きカッコの描き方。続きの小節は、番号を付けずに線だけ続ける */

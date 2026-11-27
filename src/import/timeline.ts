@@ -4,7 +4,7 @@
  */
 import { DurationType, decompose, ticksOf } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { CapacityOf, EventMarks, EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { CapacityOf, GraceNote, cloneGraces, EventMarks, EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 /** 連符の一員であること（同じ key の続いた音が1つの連符） */
 export interface TimedTuplet {
@@ -31,6 +31,8 @@ export interface TimedEvent {
   /** 置いた結果：最初と最後のかけらの id（スラーなどをつなぐのに使う）。buildMeasures が書き込む */
   placed?: { first: string; last: string };
   tuplet?: TimedTuplet;
+  /** 前に付く装飾音（分けたときは最初のかけらに付ける） */
+  graces?: GraceNote[];
 }
 
 /** 32分音符より細かい長さ（連符など）は近い32分音符の位置にそろえる */
@@ -136,6 +138,7 @@ export function buildMeasures(events: TimedEvent[], capacity: CapacityOf, minMea
             if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
             if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
             if (src.texts) copyTexts(src.texts, ev);
+            if (src.graces?.length && ev.kind === 'note') ev.graces = cloneGraces(src.graces);
           }
           src.placed.last = ev.id;
         }
@@ -165,6 +168,7 @@ export function buildMeasures(events: TimedEvent[], capacity: CapacityOf, minMea
         if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
         if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
         if (src.texts) copyTexts(src.texts, ev);
+        if (src.graces?.length && ev.kind === 'note') ev.graces = cloneGraces(src.graces);
         (buckets[bars.indexAt(cursor)] ??= []).push(ev);
         cursor += e.ticks;
       }

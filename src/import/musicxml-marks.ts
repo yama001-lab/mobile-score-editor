@@ -1,4 +1,4 @@
-/** MusicXML 取り込みのうち記号（強弱・ヘアピン・スラー・アーティキュレーション）の部分 */
+/** MusicXML 取り込みのうち記号（強弱・ヘアピン・スラー・アーティキュレーション・オクターブ記号・ペダル）の部分 */
 import { DYNAMICS } from '../model/marks';
 import { Articulation, Dynamic, Spanner, SpannerKind, uid } from '../model/score';
 import { TimedEvent } from './timeline';
@@ -87,15 +87,31 @@ export function readDirectionMarks(dir: Element, st: MarkState, last: TimedEvent
       const num = w.getAttribute('number') ?? '1';
       if (type === 'crescendo' || type === 'diminuendo') {
         st.pendingWedges.push({ num, kind: type === 'crescendo' ? 'cresc' : 'dim' });
-      } else if (type === 'stop') {
-        const pending = st.pendingWedges.findIndex((x) => x.num === num);
-        if (pending >= 0) { st.pendingWedges.splice(pending, 1); continue; }
-        const open = st.openWedges.get(num);
-        if (open?.from && last && last !== open.from) st.done.push({ kind: open.kind, from: open.from, to: last });
-        st.openWedges.delete(num);
-      }
+      } else if (type === 'stop') closeLine(st, num, last);
+    }
+    // オクターブ記号：type="down" は書いた音より1オクターブ上で鳴る（8va）、"up" は下（8vb）
+    for (const o of kids(dt, 'octave-shift')) {
+      const type = o.getAttribute('type');
+      const num = 'o' + (o.getAttribute('number') ?? '1');
+      const size = parseInt(o.getAttribute('size') ?? '8', 10);
+      if ((type === 'down' || type === 'up') && size === 8) st.pendingWedges.push({ num, kind: type === 'down' ? '8va' : '8vb' });
+      else if (type === 'stop') closeLine(st, num, last);
+    }
+    for (const p of kids(dt, 'pedal')) {
+      const type = p.getAttribute('type');
+      if (type === 'stop' || type === 'change') closeLine(st, 'pedal', last);
+      if (type === 'start' || type === 'change') st.pendingWedges.push({ num: 'pedal', kind: 'pedal' });
     }
   }
+}
+
+/** 開いているヘアピン・オクターブ記号・ペダルを、直前の音符で閉じる */
+function closeLine(st: MarkState, num: string, last: TimedEvent | null) {
+  const pending = st.pendingWedges.findIndex((x) => x.num === num);
+  if (pending >= 0) { st.pendingWedges.splice(pending, 1); return; }
+  const open = st.openWedges.get(num);
+  if (open?.from && last && last !== open.from) st.done.push({ kind: open.kind, from: open.from, to: last });
+  st.openWedges.delete(num);
 }
 
 /** buildMeasures() のあとで、置いた音符の id からスパナーを作る */

@@ -4,6 +4,7 @@
  */
 import { Articulation as VfArticulation, Glyph, Modifier, Renderer, StaveNote } from 'vexflow/bravura';
 import { resolveSpanners } from '../model/marks';
+import { drawLineSpanner } from './notation';
 import { Articulation, Dynamic, MusicEvent, Score, measureEvents } from '../model/score';
 
 type Ctx = ReturnType<Renderer['getContext']>;
@@ -128,6 +129,8 @@ function drawHairpin(ctx: Ctx, kind: 'cresc' | 'dim', x1: number, x2: number, y:
 /** 強弱記号・ヘアピン・スラーをまとめて描く（ページ内の音符だけ） */
 export function drawMarks(
   ctx: Ctx, score: Score, placed: Map<string, PlacedNote>, boxes: SystemBox[], partOf: Map<string, number>,
+  /** このページに描く小節の範囲。両端がページの外で、ページ全体にかかるスパナーも描くために使う */
+  span?: { first: number; last: number },
 ): void {
   // 強弱記号
   const dynWidth = new Map<string, number>();
@@ -140,19 +143,26 @@ export function drawMarks(
     dynWidth.set(ev.id, drawDynamic(ctx, ev.dynamic, headX(pn.note), y));
   }
 
-  for (const r of resolveSpanners(score)) {
+  const resolved = resolveSpanners(score);
+  const dynParts = new Set<number>();
+  score.parts.forEach((part, pi) => {
+    if (part.measures.some((m) => measureEvents(m).some((e) => e.dynamic))) dynParts.add(pi);
+  });
+  for (const r of resolved) if (r.spanner.kind === 'cresc' || r.spanner.kind === 'dim') dynParts.add(r.partIndex);
+  for (const r of resolved) {
     const a = placed.get(r.from.ev.id);
     const b = placed.get(r.to.ev.id);
-    if (!a && !b) continue;
+    // 両端ともページの外：ページ全体にかかるときだけ、全部の段に線を引く
+    if (!a && !b && !(span && r.from.loc.measureIndex < span.first && r.to.loc.measureIndex > span.last)) continue;
     const pi = r.partIndex;
-    const sysA = a?.system ?? b!.system;
-    const sysB = b?.system ?? a!.system;
+    const sysA = a?.system ?? b?.system ?? 0;
+    const sysB = b?.system ?? a?.system ?? boxes.length - 1;
     // 別の段（またはページ外）にまたがるときは段ごとに分けて描く
     const segments: { sys: number; from?: StaveNote; to?: StaveNote }[] = [];
     if (a && b && sysA === sysB) segments.push({ sys: sysA, from: a.note, to: b.note });
     else {
       if (a) segments.push({ sys: sysA, from: a.note });
-      for (let s = (a ? sysA + 1 : 0); s < (b ? sysB : boxes.length); s++) if (a || b) segments.push({ sys: s });
+      for (let s = (a ? sysA + 1 : 0); s < (b ? sysB : boxes.length); s++) segments.push({ sys: s });
       if (b) segments.push({ sys: sysB, to: b.note });
     }
     for (const seg of segments) {
@@ -170,6 +180,23 @@ export function drawMarks(
         const y1 = seg.from ? slurEndY(seg.from, above) : (seg.to ? slurEndY(seg.to, above) : edgeY);
         const y2 = seg.to ? slurEndY(seg.to, above) : y1;
         drawSlur(ctx, x1, y1, x2, y2, above);
+      } else if (r.spanner.kind === '8va' || r.spanner.kind === '8vb' || r.spanner.kind === 'pedal') {
+        const notes = [seg.from, seg.to].filter((n): n is StaveNote => !!n);
+        const kind = r.spanner.kind;
+        let y: number;
+        if (kind === '8va') {
+          y = box.tops[pi] - 16;
+          for (const n of notes) y = Math.min(y, Math.min(...n.getYs(), n.getStemDirection() === 1 && !n.isRest() ? n.getStemExtents().topY : Infinity) - 12);
+        } else if (kind === '8vb') {
+          y = box.bottoms[pi] + 26;
+          for (const n of notes) y = Math.max(y, Math.max(...n.getYs(), n.getStemDirection() === -1 && !n.isRest() ? n.getStemExtents().topY : -Infinity) + 16);
+        } else {
+          // 強弱記号・ヘアピンのあるパートではその下、なければ五線（と低い音）のすぐ下
+          y = dynamicsY(box, pi, notes) + (dynParts.has(pi) ? 22 : 0);
+        }
+        const x1 = seg.from ? headX(seg.from) - 4 : box.x0;
+        const x2 = seg.to ? headX(seg.to) + 10 : box.x1;
+        drawLineSpanner(ctx, kind, x1, Math.max(x1 + 14, x2), y, !seg.from, !seg.to);
       } else {
         const notes = [seg.from, seg.to].filter((n): n is StaveNote => !!n);
         const y = dynamicsY(box, pi, notes);

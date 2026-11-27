@@ -146,7 +146,7 @@ export function partSpacing(score: Score): PartSpacing[] {
       if (e.dynamic) hasDynamics = true;
       ids.add(e.id);
     }
-    if (score.spanners?.some((s) => s.kind !== 'slur' && ids.has(s.from))) hasDynamics = true;
+    if (score.spanners?.some((s) => (s.kind === 'cresc' || s.kind === 'dim' || s.kind === 'pedal') && ids.has(s.from))) hasDynamics = true;
     const hasLowSlur = resolveSpanners(score).some((r) => r.partIndex === pi && r.voice === 1 && r.spanner.kind === 'slur');
     const voice1Verses = partVerses(score, pi, 0);
     const verses = voice1Verses + partVerses(score, pi, 1);

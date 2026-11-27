@@ -6,12 +6,13 @@
  * - 1つの段（staff）につき声部は2つまで（最初に出てきた声部を声部1、次を声部2）。3つ目からは捨てる
  * - ピアノなど2段のパートは、段ごとに別のパートにする
  * - 途中の調号・拍子の変更、リピート記号、番号付きカッコ（ending）、弱起（1小節目の implicit）は取り込む
- * - 連符はそのまま取り込む（入れ子の連符や、ティックが割り切れない7連符などは近い長さに丸める）。装飾音は捨てる
+ * - 連符はそのまま取り込む（入れ子の連符や、ティックが割り切れない7連符などは近い長さに丸める）
+ * - 装飾音、途中の音部記号の変更、オクターブ記号、ペダル、セーニョ・コーダ・Fine・D.C./D.S. も取り込む
  */
 import { DurationType, PPQ, ticksOf } from '../model/duration';
-import { Pitch, STEPS, Step } from '../model/pitch';
+import { Pitch, STEPS, Step, comparePitch } from '../model/pitch';
 import {
-  Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, VOICE_COUNT, equalizeMeasureCounts, measureCapacity,
+  Clef, GraceNote, JumpKind, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, VOICE_COUNT, equalizeMeasureCounts, measureCapacity,
   normalizeMeasure, uid, MeasureAttrs,
 } from '../model/score';
 import { Bars, TimedEvent, buildMeasures } from './timeline';
@@ -54,6 +55,10 @@ interface StaffState {
   /** MusicXML の声部番号 → この楽譜の声部（出てきた順。2つまで） */
   voices: Map<string, VoiceState>;
   clef: Clef | null;
+  /** 途中の音部記号の変更（曲頭からのティック） */
+  clefChanges: { tick: number; clef: Clef }[];
+  /** 声部ごとの、次の音符に付ける装飾音 */
+  graces: Map<string, GraceNote[]>;
   /** 直前に置いた音（声部を問わない）。強弱記号などを付ける先 */
   last: TimedEvent | null;
   /** スラー・強弱記号など（musicxml-marks.ts） */
@@ -133,7 +138,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { voices: new Map(), clef: null, last: null, marks: newMarkState(), pending: {} }));
+      if (!s) staves.set(n, (s = { voices: new Map(), clef: null, clefChanges: [], graces: new Map(), last: null, marks: newMarkState(), pending: {} }));
       return s;
     };
     let staffCount = 1;
@@ -151,6 +156,13 @@ export function parseMusicXml(xml: string): ImportResult {
       let closeVolta = false;
       for (const c of kids(mEl)) {
         switch (c.localName) {
+          case 'print': {
+            // 改行・改ページは、前の小節のあとで切るものとして持つ
+            if (!first || mi === 0) break;
+            if (c.getAttribute('new-page') === 'yes') attrOf(mi - 1).pageBreak = true;
+            else if (c.getAttribute('new-system') === 'yes') attrOf(mi - 1).systemBreak = true;
+            break;
+          }
           case 'barline': {
             if (!first) break;
             const rep = kid(c, 'repeat');
@@ -193,7 +205,9 @@ export function parseMusicXml(xml: string): ImportResult {
             }
             for (const cl of kids(c, 'clef')) {
               const st = staffOf(parseInt(cl.getAttribute('number') ?? '1', 10) || 1);
-              st.clef ??= clefOf(cl);
+              const clef = clefOf(cl);
+              if (!st.clef) st.clef = clef;
+              else st.clefChanges.push({ tick: measureStart + pos, clef });
             }
             break;
           }
@@ -217,7 +231,15 @@ export function parseMusicXml(xml: string): ImportResult {
                 const t = r.textContent?.trim();
                 if (t && outParts.length === 0) rehearsals.push({ tick: measureStart + pos, text: t });
               }
-              const words = kids(dt, 'words').map((w) => w.textContent?.trim() ?? '').filter(Boolean).join(' ');
+              if (first && kids(dt, 'segno').length) attrOf(mi).segno = true;
+              if (first && kids(dt, 'coda').length) attrOf(mi).coda = true;
+              let words = kids(dt, 'words').map((w) => w.textContent?.trim() ?? '').filter(Boolean).join(' ');
+              // D.S. al Coda・Fine・To Coda などは文字ではなく小節の記号にする
+              const flow = readFlowWords(words);
+              if (flow) {
+                if (first) Object.assign(attrOf(mi), flow);
+                words = '';
+              }
               if (words) st.pending.text = st.pending.text ? `${st.pending.text} ${words}` : words;
             }
           }
@@ -241,8 +263,24 @@ export function parseMusicXml(xml: string): ImportResult {
             break;
           }
           case 'note': {
-            if (kid(c, 'grace')) { warn.add('装飾音は取り込んでいません'); break; }
             if (kid(c, 'cue')) break;
+            const graceEl = kid(c, 'grace');
+            if (graceEl) {
+              // 装飾音：同じ声部の次の音符の前に付ける
+              const pitchEl = kid(c, 'pitch');
+              if (!pitchEl) break;
+              const gst = staffOf(parseInt(txt(c, 'staff') || '1', 10) || 1);
+              const gv = txt(c, 'voice') || '1';
+              const list = gst.graces.get(gv) ?? [];
+              const p = readPitch(pitchEl);
+              if (kid(c, 'chord') && list.length) list[list.length - 1].pitches.push(p);
+              else {
+                const t = txt(c, 'type');
+                list.push({ pitches: [p], duration: t === '16th' || t === '32nd' ? '16' : '8', ...(graceEl.getAttribute('slash') === 'yes' ? { slash: true } : {}) });
+              }
+              gst.graces.set(gv, list);
+              break;
+            }
             const dur = (num(c, 'duration') * PPQ) / divisions;
             const st = staffOf(parseInt(txt(c, 'staff') || '1', 10) || 1);
             const voice = txt(c, 'voice') || '1';
@@ -283,6 +321,11 @@ export function parseMusicXml(xml: string): ImportResult {
             if (texts.chord || texts.text || texts.lyrics) ev.texts = texts;
             st.pending = {};
             readNoteMarks(c, st.marks, ev, false, voice);
+            const graces = st.graces.get(voice);
+            if (graces?.length) {
+              if (ev.pitches) ev.graces = graces.map((g) => ({ ...g, pitches: [...g.pitches].sort(comparePitch) }));
+              st.graces.delete(voice);
+            }
             readTuplet(c, target, ev);
             target.events.push(ev);
             target.last = ev;
@@ -324,7 +367,7 @@ export function parseMusicXml(xml: string): ImportResult {
   let quantized = false;
   let dropped = false;
 
-  const parts: Part[] = outParts.map(({ name, staff }, i) => {
+  const parts: Part[] = outParts.map(({ name, staff }, i): Part => {
     // 元の TimedEvent をそのまま渡す（buildMeasures が placed を書き込み、スラーなどの両端に使う）
     const lists = [...staff.voices.values()].map((v) => v.events);
     if (!lists.length) lists.push([]);
@@ -343,13 +386,20 @@ export function parseMusicXml(xml: string): ImportResult {
         normalizeMeasure(m, capOf(k));
       });
     }
-    return {
-      id: uid(),
-      name,
-      clef: staff.clef ?? (i > 0 && outParts.length === 2 ? 'bass' : 'treble'),
-      instrument: 'piano',
-      measures,
-    };
+    const clef = staff.clef ?? (i > 0 && outParts.length === 2 ? 'bass' : 'treble');
+    // 途中の音部記号の変更は、その時刻を含む小節の頭に付ける（前と同じなら付けない）
+    let cur = clef;
+    for (const ch of staff.clefChanges) {
+      const mi = bars.indexAt(ch.tick);
+      if (mi === 0 || !measures[mi]) continue;
+      measures[mi].clef = ch.clef;
+    }
+    measures.forEach((m, k) => {
+      if (!m.clef) return;
+      if (k === 0 || m.clef === cur) delete m.clef;
+      else cur = m.clef;
+    });
+    return { id: uid(), name, clef, instrument: 'piano', measures };
   });
   if (quantized) warn.add('細かいリズム（連符など）は近い長さに丸めました');
   if (dropped) warn.add('重なっていた音の一部を省きました');
@@ -387,6 +437,19 @@ export function parseMusicXml(xml: string): ImportResult {
     if (m && !m.rehearsal) m.rehearsal = r.text;
   }
   return { score, warnings: [...warn] };
+}
+
+/** 「D.S. al Coda」「Fine」「To Coda」などの文字を、小節の記号にする（当てはまらなければ null） */
+export function readFlowWords(words: string): Pick<MeasureAttrs, 'fine' | 'toCoda' | 'jump'> | null {
+  const w = words.replace(/\s+/g, ' ').trim();
+  if (/^fine\.?$/i.test(w)) return { fine: true };
+  if (/^to coda/i.test(w)) return { toCoda: true };
+  const m = /^(d\.\s?c\.|d\.\s?s\.|da capo|dal segno)(?:\s+al\s+(fine|coda))?\.?$/i.exec(w);
+  if (!m) return null;
+  const head = m[1].toLowerCase();
+  const base = head.startsWith('d.') ? (head.includes('c') ? 'dc' : 'ds') : head === 'da capo' ? 'dc' : 'ds';
+  const tail = m[2]?.toLowerCase();
+  return { jump: (tail ? `${base}-${tail}` : base) as JumpKind };
 }
 
 /** <time-modification> と <tuplet> から、連符のまとまりを読む */

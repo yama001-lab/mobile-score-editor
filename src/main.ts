@@ -3,18 +3,20 @@ import { Editor, Mode } from './editor/editor';
 import { DURATION_LABELS, DurationType } from './model/duration';
 import { keyLabelJa, Step, toMidi } from './model/pitch';
 import {
-  Clef, Instrument, Score, createScore, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoAt, tempoMarkAt,
+  Clef, Instrument, JumpKind, Score, createScore, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoAt, tempoMarkAt,
   timeSigAt, timeSigChangeAt,
 } from './model/score';
 import { Player } from './audio/player';
 import { ScheduledMark } from './audio/schedule';
 import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
-import { EventHit, MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
+import { EventHit, MeasureHit, TempoHit, diatonicAtY } from './render/render';
+import { ScoreView } from './render/view';
 import { setupTranspose } from './ui/transpose';
 import { applyIcons, ICONS, setIcon } from './ui/icons';
 import { PenLayer } from './handwriting/pen';
 import { setupMarksPalette } from './ui/marks-palette';
+import { setupNotationPalette } from './ui/notation-palette';
 import { applyRecognized, staffOf } from './handwriting/apply';
 import { Stroke, boxOf, clusterStrokes, recognizeCluster } from './handwriting/recognize';
 import { TextEntry } from './ui/text-entry';
@@ -41,6 +43,8 @@ let hits: MeasureHit[] = [];
 let tempoHits: TempoHit[] = [];
 let textHits: TextHit[] = [];
 let zoom = Number(safeGet('score-editor:zoom')) || 1;
+/** 変わった段だけを描き直す */
+const view = new ScoreView(scoreEl);
 
 // 手書きモードで楽譜の上に重ねる層（ステップ3）
 const penLayer = new PenLayer({
@@ -73,7 +77,7 @@ function render() {
   const avail = Math.max(320, wrap.clientWidth - 24);
   const width = Math.min(avail / zoom, 1100);
   scoreEl.style.width = width * zoom + 'px';
-  const res = renderScore(scoreEl, editor.score, {
+  const res = view.render(editor.score, {
     width,
     scale: zoom,
     selectedId: editor.selectedId,
@@ -81,11 +85,12 @@ function render() {
     selectedPitchIndex: editor.selectedPitchIndex,
     cursor: editor.mode !== 'select' && !texts.isOpen ? editor.cursor : null,
     textFocus: texts.focus,
+    showBreaks: true,
   });
   hits = res.hits;
   tempoHits = res.tempoHits;
   textHits = res.textHits;
-  scoreEl.appendChild(playheadLayer);
+  if (playheadLayer.parentElement !== scoreEl) scoreEl.appendChild(playheadLayer);
   penLayer.attach();
   focusInputPosition();
   drawPlayhead();
@@ -450,6 +455,7 @@ on('#btn-finger', () => {
 if (safeGet('score-editor:finger-draws') === '0') penLayer.setFingerDraws(false);
 on('#btn-pen-help', () => $<HTMLDialogElement>('#dlg-pen-help').showModal());
 setupMarksPalette(editor, { onMessage: (t) => toast(t) });
+setupNotationPalette(editor, { onMessage: (t) => toast(t) });
 
 // ---------- 手書きの読み取り ----------
 
@@ -587,6 +593,12 @@ on('#btn-remove-tuplet', () => editor.removeTuplet());
 on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1));
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
+on('#btn-toggle-break', () => {
+  const mi = (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex;
+  editor.toggleSystemBreak(mi);
+  const a = measureAttrsAt(editor.score, mi);
+  toast(a?.systemBreak ? `${mi + (editor.score.pickup ? 0 : 1)}小節目のあとで改行します` : '改行を外しました');
+});
 on('#btn-measure-marks', () => openMeasureMarks(
   (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex));
 
@@ -853,6 +865,8 @@ $<HTMLInputElement>('#file-restore').addEventListener('change', async (e) => {
 const dlgSet = $<HTMLDialogElement>('#dlg-settings');
 const beatsSel = $<HTMLSelectElement>('#set-beats');
 [2, 3, 4, 5, 6, 7, 9, 12].forEach((n) => beatsSel.add(new Option(String(n), String(n))));
+const perSystemSel = $<HTMLSelectElement>('#set-per-system');
+for (let n = 1; n <= 8; n++) perSystemSel.add(new Option(`${n}小節`, String(n)));
 const keySel = $<HTMLSelectElement>('#set-key');
 for (let f = -7; f <= 7; f++) {
   const label = f === 0 ? '調号なし（ハ長調／イ短調）' : `${Math.abs(f)}${f > 0 ? '♯' : '♭'}（${keyLabelJa(f)}）`;
@@ -898,6 +912,7 @@ function openSettings() {
   beatsSel.value = String(s.timeSignature.beats);
   $<HTMLSelectElement>('#set-beattype').value = String(s.timeSignature.beatType);
   keySel.value = String(s.keyFifths);
+  perSystemSel.value = String(s.layout?.measuresPerSystem ?? 0);
   pendingClefs = s.parts.map((p) => ({ clef: p.clef, instrument: p.instrument, remove: false, isNew: false }));
   renderPartList();
   dlgSet.showModal();
@@ -917,6 +932,7 @@ dlgSet.addEventListener('close', () => {
   if (title !== s.title || composer !== s.composer || tempo !== s.tempo || tuning !== (s.tuning ?? 440)) {
     editor.updateMeta({ title, composer, tempo, tuning });
   }
+  editor.setMeasuresPerSystem(Number(perSystemSel.value) || null);
   const fifths = Number(keySel.value);
   if (fifths !== s.keyFifths) editor.setKeySignature(fifths);
   const beats = Number(beatsSel.value);
@@ -1154,6 +1170,8 @@ const mkRepeatEnd = $<HTMLInputElement>('#mk-repeat-end');
 [2, 3, 4, 5, 6, 7, 9, 12].forEach((n) => mkBeats.add(new Option(String(n), String(n))));
 for (const o of Array.from(keySel.options)) mkKey.add(new Option(o.text, o.value));
 let marksMeasure = 0;
+let marksPart = 0;
+const CLEF_NAMES: Record<string, string> = { treble: 'ト音記号', bass: 'ヘ音記号', alto: 'ハ音記号' };
 const updateTimesVisible = () => { $('#mk-times-wrap').hidden = !mkRepeatEnd.checked; };
 mkRepeatEnd.addEventListener('change', updateTimesVisible);
 
@@ -1170,6 +1188,7 @@ function fillPickupOptions() {
 
 function openMeasureMarks(measure: number) {
   marksMeasure = measure;
+  marksPart = Math.min(editor.cursor.partIndex, editor.score.parts.length - 1);
   const s = editor.score;
   const a = measureAttrsAt(s, measure);
   $('#measure-heading').textContent = measure === 0 && s.pickup ? '弱起の小節の記号' : `${measure + (s.pickup ? 0 : 1)}小節目の記号`;
@@ -1178,6 +1197,8 @@ function openMeasureMarks(measure: number) {
   $<HTMLSelectElement>('#mk-times').value = String(a?.repeatTimes ?? 2);
   updateTimesVisible();
   $<HTMLSelectElement>('#mk-volta').value = a?.volta?.join(',') ?? '';
+  $<HTMLInputElement>('#mk-system-break').checked = !!a?.systemBreak;
+  $<HTMLInputElement>('#mk-page-break').checked = !!a?.pageBreak;
   const tc = measure === 0 ? null : timeSigChangeAt(s, measure);
   const ts = timeSigAt(s, measure);
   // 1小節目は曲全体の設定なので「変えない」は出さず、今の値を出す
@@ -1187,6 +1208,18 @@ function openMeasureMarks(measure: number) {
   mkBeatType.value = String(ts.beatType);
   const kc = measure === 0 ? keyAt(s, 0) : keyChangeAt(s, measure);
   mkKey.value = kc === null ? '' : String(kc);
+  $<HTMLInputElement>('#mk-segno').checked = !!a?.segno;
+  $<HTMLInputElement>('#mk-coda').checked = !!a?.coda;
+  $<HTMLInputElement>('#mk-tocoda').checked = !!a?.toCoda;
+  $<HTMLInputElement>('#mk-fine').checked = !!a?.fine;
+  $<HTMLSelectElement>('#mk-jump').value = a?.jump ?? '';
+  // 音部記号：カーソルのある譜表の、この小節で有効なもの
+  const part = s.parts[marksPart];
+  const clefSel = $<HTMLSelectElement>('#mk-clef');
+  clefSel.options[0].hidden = measure === 0;
+  clefSel.value = measure === 0 ? editor.clefAt(marksPart, 0) : part.measures[measure]?.clef ?? '';
+  clefSel.options[0].textContent = measure === 0 ? '変えない' : `変えない（${CLEF_NAMES[editor.clefAt(marksPart, measure)]}のまま）`;
+  $('#mk-clef-heading').textContent = s.parts.length > 1 ? `音部記号（${part.name}の譜表だけ）` : '音部記号';
   $('#mk-pickup-wrap').hidden = measure !== 0;
   fillPickupOptions();
   mkPickup.value = String(s.pickup ?? 0);
@@ -1207,6 +1240,27 @@ dlgMeasure.addEventListener('close', () => {
     || (a?.volta?.join(',') ?? '') !== voltaStr) {
     editor.setRepeat(mi, { repeatStart, repeatEnd, repeatTimes: times, volta });
   }
+  // 改行・改ページ
+  const sysBreak = $<HTMLInputElement>('#mk-system-break').checked;
+  const pageBreak = $<HTMLInputElement>('#mk-page-break').checked;
+  if (sysBreak !== !!a?.systemBreak || pageBreak !== !!a?.pageBreak) editor.setBreak(mi, { system: sysBreak, page: pageBreak });
+  // 曲の流れ
+  const flow = {
+    segno: $<HTMLInputElement>('#mk-segno').checked,
+    coda: $<HTMLInputElement>('#mk-coda').checked,
+    toCoda: $<HTMLInputElement>('#mk-tocoda').checked,
+    fine: $<HTMLInputElement>('#mk-fine').checked,
+    jump: ($<HTMLSelectElement>('#mk-jump').value || null) as JumpKind | null,
+  };
+  if (flow.segno !== !!a?.segno || flow.coda !== !!a?.coda || flow.toCoda !== !!a?.toCoda || flow.fine !== !!a?.fine
+    || (flow.jump ?? '') !== (a?.jump ?? '')) {
+    editor.setFlow(mi, flow);
+  }
+  // 音部記号（音の高さは変えず、書く位置が変わる）
+  const clefVal = $<HTMLSelectElement>('#mk-clef').value as Clef | '';
+  const part = s.parts[marksPart];
+  if (mi === 0) { if (clefVal && clefVal !== editor.clefAt(marksPart, 0)) editor.setClefAt(marksPart, 0, clefVal); }
+  else if ((part?.measures[mi]?.clef ?? '') !== clefVal) editor.setClefAt(marksPart, mi, clefVal || null);
   // 調号
   const wantKey = mkKey.value === '' ? null : Number(mkKey.value);
   if (mi === 0 ? wantKey !== null && wantKey !== s.keyFifths : wantKey !== keyChangeAt(s, mi)) editor.setKeyAt(mi, wantKey);

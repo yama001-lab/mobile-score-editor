@@ -124,7 +124,8 @@
     <button role="menuitem" id="btn-select-measure">カーソルのある小節を範囲選択</button>
     <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
-    <button role="menuitem" id="btn-measure-marks">リピート・途中の調や拍子・弱起…</button>
+    <button role="menuitem" id="btn-toggle-break">この小節のあとで改行（切り替え）</button>
+    <button role="menuitem" id="btn-measure-marks">リピート・D.S.・コーダ・音部記号・途中の調や拍子・改ページ…</button>
     <button role="menuitem" id="btn-meter">曲全体の拍子・調号…</button>
   </div>
 
@@ -261,6 +262,34 @@
         </select>
       </label>
       <p class="note">カッコは続く小節に同じ番号を付けると1つにつながります。1番カッコの最後の小節に「:|」を付けてください。</p>
+      <h3>曲の流れ（D.S.・コーダ）</h3>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-segno" /> 小節の頭にセーニョ（D.S. で戻る所）</label>
+        <label class="check"><input type="checkbox" id="mk-coda" /> 小節の頭にコーダ記号（とぶ先）</label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-tocoda" /> 終わりに To Coda</label>
+        <label class="check"><input type="checkbox" id="mk-fine" /> 終わりに Fine</label>
+      </div>
+      <label>小節の終わりで戻る
+        <select id="mk-jump">
+          <option value="">なし</option>
+          <option value="dc">D.C.（曲の頭へ）</option>
+          <option value="dc-fine">D.C. al Fine（頭へ戻って Fine で終わる）</option>
+          <option value="dc-coda">D.C. al Coda（頭へ戻って To Coda からコーダへ）</option>
+          <option value="ds">D.S.（セーニョへ）</option>
+          <option value="ds-fine">D.S. al Fine</option>
+          <option value="ds-coda">D.S. al Coda</option>
+        </select>
+      </label>
+      <p class="note">戻ったあとはリピートを繰り返さず、番号付きカッコは最後のカッコを弾きます。再生もこの順に鳴ります。</p>
+      <h3 id="mk-clef-heading">音部記号（この譜表だけ）</h3>
+      <label>この小節から <select id="mk-clef">
+        <option value="">変えない</option>
+        <option value="treble">ト音記号</option>
+        <option value="bass">ヘ音記号</option>
+        <option value="alto">ハ音記号（アルト）</option>
+      </select></label>
       <h3>この小節から変える</h3>
       <div class="row">
         <label>拍子
@@ -270,6 +299,12 @@
         <label>調号 <select id="mk-key"><option value="">変えない</option></select></label>
       </div>
       <p class="note">拍子を変えると、次の拍子変更の手前まで音符が新しい小節の長さに並べ直されます。調号を変えても音の高さはそのままです。</p>
+      <h3>レイアウト</h3>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-system-break" /> この小節のあとで改行</label>
+        <label class="check"><input type="checkbox" id="mk-page-break" /> この小節のあとで改ページ</label>
+      </div>
+      <p class="note">改ページはPDFで次のページから始めます。画面では改行と破線で示します。1段の小節数は「楽譜の設定」で決められます。</p>
       <div id="mk-pickup-wrap">
         <h3>弱起（アウフタクト）</h3>
         <label>1小節目の長さ <select id="mk-pickup"><option value="0">普通の1小節</option></select></label>
@@ -320,6 +355,11 @@
         </label>
         <label>調号 <select id="set-key"></select></label>
       </div>
+      <h3>レイアウト</h3>
+      <div class="row">
+        <label>1段の小節数 <select id="set-per-system"><option value="0">自動（横幅に合わせる）</option></select></label>
+      </div>
+      <p class="note">数を決めると、画面でもPDFでもその数ずつ並べます（小節ごとの改行・改ページの指定が優先されます）。</p>
       <h3>譜表</h3>
       <ul id="part-list" class="part-list"></ul>
       <div class="row">
