@@ -14,6 +14,7 @@ import {
   Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
 } from '../model/score';
 import { TimedEvent, buildMeasures } from './timeline';
+import { MarkState, newMarkState, readDirectionMarks, readNoteMarks, resolveImportedSpanners } from './musicxml-marks';
 
 export interface ImportResult {
   score: Score;
@@ -44,6 +45,8 @@ interface StaffState {
   clef: Clef | null;
   /** 和音の続きを足すために、直前に置いた音 */
   last: TimedEvent | null;
+  /** スラー・強弱記号など（musicxml-marks.ts） */
+  marks: MarkState;
 }
 
 export function parseMusicXml(xml: string): ImportResult {
@@ -74,7 +77,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null }));
+      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null, marks: newMarkState() }));
       return s;
     };
     let staffCount = 1;
@@ -131,6 +134,10 @@ export function parseMusicXml(xml: string): ImportResult {
               }
             }
             if (tempo && outParts.length === 0) tempos.push({ tick: measureStart + pos, tempo: Math.round(tempo) });
+            if (c.localName === 'direction') {
+              const st = staffOf(parseInt(txt(c, 'staff') || '1', 10) || 1);
+              readDirectionMarks(c, st.marks, st.last);
+            }
             break;
           }
           case 'note': {
@@ -150,6 +157,7 @@ export function parseMusicXml(xml: string): ImportResult {
               if (pitchEl && st.voice === voice && st.last?.pitches) {
                 st.last.pitches.push(readPitch(pitchEl));
                 if (tie) st.last.tie = true;
+                readNoteMarks(c, st.marks, st.last, true);
               }
               break;
             }
@@ -167,6 +175,7 @@ export function parseMusicXml(xml: string): ImportResult {
               tie: !!pitchEl && tie,
             };
             if (kid(c, 'unpitched')) ev.pitches = null;
+            readNoteMarks(c, st.marks, ev, false);
             st.events.push(ev);
             st.last = ev;
             pos += dur;
@@ -201,7 +210,9 @@ export function parseMusicXml(xml: string): ImportResult {
   let dropped = false;
 
   const parts: Part[] = outParts.map(({ name, staff }, i) => {
-    const events = staff.events.map((e) => ({ ...e, start: e.start + pickup }));
+    // 元の TimedEvent をそのまま渡す（buildMeasures が placed を書き込み、スラーなどの両端に使う）
+    const events = staff.events;
+    for (const e of events) e.start += pickup;
     const built = buildMeasures(events, cap);
     quantized ||= built.quantized;
     dropped ||= built.droppedOverlap;
@@ -238,6 +249,8 @@ export function parseMusicXml(xml: string): ImportResult {
     updatedAt: now,
   };
   if (tempoMarks.length) score.tempoMarks = tempoMarks;
+  const spanners = outParts.flatMap(({ staff }) => resolveImportedSpanners(staff.marks));
+  if (spanners.length) score.spanners = spanners;
   equalizeMeasureCounts(score);
   return { score, warnings: [...warn] };
 }

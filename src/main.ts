@@ -10,6 +10,7 @@ import { PianoKeyboard } from './input/keyboard';
 import { MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
 import { applyIcons, ICONS, setIcon } from './ui/icons';
 import { PenLayer } from './handwriting/pen';
+import { setupMarksPalette } from './ui/marks-palette';
 import { applyRecognized, staffOf } from './handwriting/apply';
 import { Stroke, boxOf, clusterStrokes, recognizeCluster } from './handwriting/recognize';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
@@ -296,6 +297,7 @@ on('#btn-finger', () => {
 });
 if (safeGet('score-editor:finger-draws') === '0') penLayer.setFingerDraws(false);
 on('#btn-pen-help', () => $<HTMLDialogElement>('#dlg-pen-help').showModal());
+setupMarksPalette(editor, { onMessage: (t) => toast(t) });
 
 // ---------- 手書きの読み取り ----------
 
