@@ -5,7 +5,7 @@
  * 音符が消えてもスパナーは残ることがあるので、使うときは resolveSpanners() で有効なものだけを取り出す。
  */
 import {
-  Articulation, Dynamic, EventLocation, MusicEvent, Score, Spanner, SpannerKind, uid,
+  Articulation, Dynamic, EventLocation, MusicEvent, Score, Spanner, SpannerKind, VOICE_COUNT, uid, voiceEvents,
 } from './score';
 
 export const ARTICULATIONS: Articulation[] = ['staccato', 'accent', 'tenuto', 'marcato', 'fermata'];
@@ -47,39 +47,51 @@ export function setDynamicOn(ev: MusicEvent, d: Dynamic | null): void {
   else delete ev.dynamic;
 }
 
-/** パートの音符・休符を曲の頭から並べたもの */
+/** パートの1つの声部の音符・休符を曲の頭から並べたもの */
 export interface FlatEvent {
   ev: MusicEvent;
   loc: EventLocation;
-  /** パートの中での通し番号 */
+  /** パートの声部の中での通し番号 */
   index: number;
 }
 
-export function flatEvents(score: Score, partIndex: number): FlatEvent[] {
+/** パートの声部（0=声部1、1=声部2）の音を曲の頭から並べる。声部2のない小節はとばす */
+export function flatEvents(score: Score, partIndex: number, voice = 0): FlatEvent[] {
   const out: FlatEvent[] = [];
   score.parts[partIndex]?.measures.forEach((m, measureIndex) =>
-    m.events.forEach((ev, eventIndex) => out.push({ ev, loc: { partIndex, measureIndex, eventIndex }, index: out.length })));
+    voiceEvents(m, voice).forEach((ev, eventIndex) =>
+      out.push({ ev, loc: voice ? { partIndex, measureIndex, eventIndex, voice } : { partIndex, measureIndex, eventIndex }, index: out.length })));
   return out;
 }
 
 export interface ResolvedSpanner {
   spanner: Spanner;
   partIndex: number;
+  /** 0=声部1、1=声部2 */
+  voice: number;
   from: FlatEvent;
   to: FlatEvent;
 }
 
-/** 有効なスパナー（両端の音符があり、同じパートで、from が to より前）だけを返す */
+/** 音符の id から、その音符のある声部の並びの中の位置を引けるようにする */
+function indexEvents(score: Score): Map<string, { partIndex: number; voice: number; fe: FlatEvent }> {
+  const byId = new Map<string, { partIndex: number; voice: number; fe: FlatEvent }>();
+  score.parts.forEach((_, pi) => {
+    for (let v = 0; v < VOICE_COUNT; v++) flatEvents(score, pi, v).forEach((fe) => byId.set(fe.ev.id, { partIndex: pi, voice: v, fe }));
+  });
+  return byId;
+}
+
+/** 有効なスパナー（両端の音符があり、同じパートの同じ声部で、from が to より前）だけを返す */
 export function resolveSpanners(score: Score): ResolvedSpanner[] {
   if (!score.spanners?.length) return [];
-  const byId = new Map<string, { partIndex: number; fe: FlatEvent }>();
-  score.parts.forEach((_, pi) => flatEvents(score, pi).forEach((fe) => byId.set(fe.ev.id, { partIndex: pi, fe })));
+  const byId = indexEvents(score);
   const out: ResolvedSpanner[] = [];
   for (const s of score.spanners) {
     const a = byId.get(s.from);
     const b = byId.get(s.to);
-    if (!a || !b || a.partIndex !== b.partIndex || a.fe.index >= b.fe.index) continue;
-    out.push({ spanner: s, partIndex: a.partIndex, from: a.fe, to: b.fe });
+    if (!a || !b || a.partIndex !== b.partIndex || a.voice !== b.voice || a.fe.index >= b.fe.index) continue;
+    out.push({ spanner: s, partIndex: a.partIndex, voice: a.voice, from: a.fe, to: b.fe });
   }
   return out;
 }
@@ -102,7 +114,7 @@ export function addSpanner(score: Score, kind: SpannerKind, from: string, to: st
   if (me) {
     const clash = (k: SpannerKind) => (kind === 'slur' ? k === 'slur' : k !== 'slur');
     const drop = new Set(all
-      .filter((r) => r.spanner.id !== s.id && clash(r.spanner.kind) && r.partIndex === me.partIndex
+      .filter((r) => r.spanner.id !== s.id && clash(r.spanner.kind) && r.partIndex === me.partIndex && r.voice === me.voice
         && r.from.index <= me.to.index && me.from.index <= r.to.index)
       .map((r) => r.spanner.id));
     score.spanners = score.spanners.filter((x) => !drop.has(x.id));
@@ -130,15 +142,13 @@ function stepTarget(kind: SpannerKind, fe: FlatEvent) {
  */
 export function toggleSpannerAt(score: Score, kind: SpannerKind, selectedId: string, appendMode: boolean): string | null {
   pruneSpanners(score);
-  let seq: FlatEvent[] = [];
-  let me: FlatEvent | undefined;
-  for (let pi = 0; pi < score.parts.length && !me; pi++) {
-    seq = flatEvents(score, pi);
-    me = seq.find((fe) => fe.ev.id === selectedId);
-  }
-  if (!me) return null;
-  const partIndex = me.loc.partIndex;
-  const mine = resolveSpanners(score).filter((r) => r.spanner.kind === kind).filter((r) => r.partIndex === partIndex);
+  const found = indexEvents(score).get(selectedId);
+  if (!found) return null;
+  const { partIndex, voice } = found;
+  // 声部ごとに、その声部の音符の並びの中で前後をたどる
+  const seq = flatEvents(score, partIndex, voice);
+  const me: FlatEvent = seq[found.fe.index];
+  const mine = resolveSpanners(score).filter((r) => r.spanner.kind === kind && r.partIndex === partIndex && r.voice === voice);
 
   if (appendMode) {
     const prev = [...seq.slice(0, me.index)].reverse().find((fe) => stepTarget(kind, fe));
@@ -182,7 +192,7 @@ export function spannersAt(score: Score, id: string): SpannerKind[] {
     const idx = [r.from, r.to];
     if (idx.some((fe) => fe.ev.id === id)) out.add(r.spanner.kind);
     else {
-      const seq = flatEvents(score, r.partIndex);
+      const seq = flatEvents(score, r.partIndex, r.voice);
       const fe = seq.find((x) => x.ev.id === id);
       if (fe && fe.index > r.from.index && fe.index < r.to.index) out.add(r.spanner.kind);
     }

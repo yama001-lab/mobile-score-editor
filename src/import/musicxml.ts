@@ -259,7 +259,7 @@ export function parseMusicXml(xml: string): ImportResult {
                 vs.last.pitches.push(readPitch(pitchEl));
                 if (tie) vs.last.tie = true;
                 if (lyrics && !vs.last.texts?.lyrics) (vs.last.texts ??= {}).lyrics = lyrics;
-                readNoteMarks(c, st.marks, vs.last, true);
+                readNoteMarks(c, st.marks, vs.last, true, voice);
               }
               break;
             }
@@ -282,7 +282,7 @@ export function parseMusicXml(xml: string): ImportResult {
             if (lyrics && ev.pitches) texts.lyrics = lyrics;
             if (texts.chord || texts.text || texts.lyrics) ev.texts = texts;
             st.pending = {};
-            readNoteMarks(c, st.marks, ev, false);
+            readNoteMarks(c, st.marks, ev, false, voice);
             readTuplet(c, target, ev);
             target.events.push(ev);
             target.last = ev;

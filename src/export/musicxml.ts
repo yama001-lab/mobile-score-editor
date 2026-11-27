@@ -55,15 +55,15 @@ export function toMusicXml(score: Score): string {
     out.push(`<part id="P${pi + 1}">`);
     // 声部ごとの「前の音からタイが続いている音」
     const tiedFrom: Set<string>[] = [new Set(), new Set()];
-    /** 番ごとの、前の音節がハイフンでつながっているか */
-    const hyphenOpen: boolean[] = [];
-    const lyricsXml = (ev: MusicEvent): string => {
+    /** 声部・番ごとの、前の音節がハイフンでつながっているか */
+    const hyphenOpen: boolean[][] = [[], []];
+    const lyricsXml = (ev: MusicEvent, voice: number): string => {
       if (ev.kind !== 'note' || !ev.lyrics) return '';
       return ev.lyrics.map((raw, v) => {
         if (!raw) return '';
         const { text, hyphen } = splitSyllable(raw);
-        const open = !!hyphenOpen[v];
-        hyphenOpen[v] = hyphen;
+        const open = !!hyphenOpen[voice][v];
+        hyphenOpen[voice][v] = hyphen;
         const syl = open ? (hyphen ? 'middle' : 'end') : hyphen ? 'begin' : 'single';
         return `<lyric number="${v + 1}"><syllabic>${syl}</syllabic><text>${esc(text)}</text></lyric>`;
       }).join('');
@@ -130,7 +130,7 @@ export function toMusicXml(score: Score): string {
             return;
           }
           const next = new Set<string>();
-          const lyrics = lyricsXml(ev);
+          const lyrics = lyricsXml(ev, v);
           ev.pitches.forEach((p, k) => {
             const key = `${p.step}${p.alter}${p.octave}`;
             const stop = tiedFromPrev.has(key);

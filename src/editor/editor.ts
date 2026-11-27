@@ -831,11 +831,18 @@ export class Editor {
     const loc = findEvent(this.score, focus);
     if (!loc) return;
     const part = this.score.parts[loc.partIndex];
+    // 選んでいる音の声部の中で前後へ。となりの小節にその声部がなければ声部1の音
+    const list = (mi: number) => {
+      const m = part.measures[mi];
+      if (!m) return [];
+      const evs = voiceEvents(m, loc.voice);
+      return evs.length ? evs : m.events;
+    };
     let m = loc.measureIndex;
     let e = loc.eventIndex + delta;
-    if (e < 0) { m--; e = m >= 0 ? part.measures[m].events.length - 1 : 0; }
-    else if (e >= part.measures[m].events.length) { m++; e = 0; }
-    const ev = part.measures[m]?.events[e];
+    if (e < 0) { m--; e = m >= 0 ? list(m).length - 1 : 0; }
+    else if (e >= list(m).length) { m++; e = 0; }
+    const ev = list(m)[e];
     if (!ev) return;
     if (!this.rangeAnchor) this.extendSelectionTo(focus);
     // 起点より手前に戻ってきたら、起点から広げ直す
@@ -865,12 +872,12 @@ export class Editor {
     if (first) this.cursor = { ...first };
   }
 
-  /** いまコピーの対象になるもの：範囲、なければ選択中の1音 */
+  /** いまコピーの対象になるもの：範囲（両方の声部）、なければ選択中の1音（その音の声部だけ） */
   private copySource(): RangeSel | null {
     if (this.range) return this.range;
     if (!this.selectedId) return null;
     const s = eventSpan(this.score, this.selectedId);
-    return s ? { partFrom: s.partIndex, partTo: s.partIndex, start: s.start, end: s.end } : null;
+    return s ? { partFrom: s.partIndex, partTo: s.partIndex, start: s.start, end: s.end, voice: s.voice } : null;
   }
 
   get canCopy() {
@@ -911,20 +918,30 @@ export class Editor {
     this.afterRangeChange();
   }
 
-  /** 貼り付ける位置：範囲の頭 → 選択中の音 → 入力位置（カーソル） */
-  private pasteTarget(): { partIndex: number; start: number } | null {
-    if (this.range) return { partIndex: this.range.partFrom, start: this.range.start };
+  /**
+   * 貼り付ける位置：範囲の頭 → 選択中の音 → 入力位置（カーソル）。
+   * voice は1つの声部だけのコピーを貼る声部（選択中の音・入力位置の声部）
+   */
+  private pasteTarget(): { partIndex: number; start: number; voice: number } | null {
+    if (this.range) return { partIndex: this.range.partFrom, start: this.range.start, voice: this.range.voice ?? 0 };
     if (this.selectedId && this.mode !== 'input') {
       const s = eventSpan(this.score, this.selectedId);
-      if (s) return { partIndex: s.partIndex, start: s.start };
+      if (s) return { partIndex: s.partIndex, start: s.start, voice: s.voice };
     }
     const c = this.cursor;
     const part = this.score.parts[c.partIndex];
     const m = part?.measures[c.measureIndex];
     if (!m) return null;
+    const voice = c.voice ?? 0;
+    const events = voiceEvents(m, voice);
     let t = measureStartTick(this.score, c.measureIndex);
-    for (let i = 0; i < Math.min(c.eventIndex, m.events.length); i++) t += eventTicks(m.events[i]);
-    return { partIndex: c.partIndex, start: t };
+    if (voice && !events.length) {
+      // 声部2のない小節：入力位置は声部1の音の番号で数える
+      for (let i = 0; i < Math.min(c.eventIndex, m.events.length); i++) t += eventTicks(m.events[i]);
+    } else {
+      for (let i = 0; i < Math.min(c.eventIndex, events.length); i++) t += eventTicks(events[i]);
+    }
+    return { partIndex: c.partIndex, start: t, voice };
   }
 
   /** 貼り付け。貼った所を範囲として選び、入力位置はその次へ */
@@ -933,7 +950,7 @@ export class Editor {
     const at = this.pasteTarget();
     if (!clip || !at) return false;
     this.mutate(() => {
-      const r = pasteClip(this.score, clip, at.partIndex, at.start);
+      const r = pasteClip(this.score, clip, at.partIndex, at.start, at.voice);
       if (!r) return;
       if (this.mode === 'select') {
         this.range = { ...r };
@@ -942,12 +959,27 @@ export class Editor {
       } else {
         this.selectedId = null;
       }
-      // 入力位置は貼った所のすぐ後ろ（入力モードで最後まで来たら、入力と同じく小節を足す）
+      // 入力位置は貼った所のすぐ後ろ（入力モードで最後まで来たら、入力と同じく小節を足す）。
+      // 1つの声部だけを貼ったときはその声部、それ以外は今の入力の声部のまま
+      const voice = r.voice ?? (this.cursor.voice ?? 0);
+      const withVoice = (c: Cursor): Cursor => (voice ? { ...c, voice } : c);
       let mi = 0;
       while (measureStartTick(this.score, mi + 1) <= r.end) mi++;
       if (this.mode === 'input') this.ensureMeasure(mi);
       const ms = this.score.parts[r.partFrom].measures;
-      if (mi >= ms.length) { mi = ms.length - 1; this.cursor = { partIndex: r.partFrom, measureIndex: mi, eventIndex: ms[mi].events.length - 1 }; return; }
+      if (mi >= ms.length) {
+        mi = ms.length - 1;
+        const last = voiceEvents(ms[mi], voice);
+        this.cursor = withVoice({ partIndex: r.partFrom, measureIndex: mi, eventIndex: Math.max(0, (last.length || ms[mi].events.length) - 1) });
+        return;
+      }
+      if (voice) {
+        // 声部2の途中なら、その位置に休符の区切りを作って置く
+        this.cursor = withVoice({ partIndex: r.partFrom, measureIndex: mi, eventIndex: 0 });
+        const tick = r.end - measureStartTick(this.score, mi);
+        this.cursor.eventIndex = splitRestAt(ensureVoice(ms[mi], voice, this.capacityOf(mi)), tick);
+        return;
+      }
       const m = ms[mi];
       let t = measureStartTick(this.score, mi);
       let ei = 0;

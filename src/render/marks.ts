@@ -4,7 +4,7 @@
  */
 import { Articulation as VfArticulation, Glyph, Modifier, Renderer, StaveNote } from 'vexflow/bravura';
 import { resolveSpanners } from '../model/marks';
-import { Articulation, Dynamic, MusicEvent, Score } from '../model/score';
+import { Articulation, Dynamic, MusicEvent, Score, measureEvents } from '../model/score';
 
 type Ctx = ReturnType<Renderer['getContext']>;
 
@@ -131,7 +131,7 @@ export function drawMarks(
 ): void {
   // 強弱記号
   const dynWidth = new Map<string, number>();
-  for (const part of score.parts) for (const m of part.measures) for (const ev of m.events) {
+  for (const part of score.parts) for (const m of part.measures) for (const ev of measureEvents(m)) {
     if (!ev.dynamic) continue;
     const pn = placed.get(ev.id);
     if (!pn) continue;
@@ -161,7 +161,9 @@ export function drawMarks(
       if (r.spanner.kind === 'slur') {
         const notes = [seg.from, seg.to].filter((n): n is StaveNote => !!n);
         const allUp = notes.every((n) => !n.isRest() && n.getStemDirection() === 1);
-        const above = !allUp;
+        // 2声部の小節では、声部1のスラーは上、声部2のスラーは下（もう片方の声部とぶつけない）
+        const twoVoices = [r.from, r.to].some((fe) => !!score.parts[pi].measures[fe.loc.measureIndex]?.voice2);
+        const above = r.voice ? false : twoVoices ? true : !allUp;
         const x1 = seg.from ? headX(seg.from) + 2 : box.x0;
         const x2 = seg.to ? headX(seg.to) - 2 : box.x1;
         const edgeY = above ? box.tops[pi] - 6 : box.bottoms[pi] + 6;

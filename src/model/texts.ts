@@ -3,7 +3,7 @@
  * 画面の入力（src/ui/text-entry.ts）、描画、MusicXML の読み書きから使う。
  */
 import { Step } from './pitch';
-import { MusicEvent, NoteEvent, Score } from './score';
+import { MusicEvent, NoteEvent, Score, VOICE_COUNT, measureEvents, voiceEvents } from './score';
 
 /** 歌詞を入れられる最大の番の数 */
 export const MAX_VERSES = 5;
@@ -32,34 +32,46 @@ export function splitSyllable(raw: string): { text: string; hyphen: boolean } {
 
 export function maxVerses(score: Score): number {
   let n = 0;
-  for (const p of score.parts) for (const m of p.measures) for (const e of m.events)
+  for (const p of score.parts) for (const m of p.measures) for (const e of measureEvents(m))
     if (e.kind === 'note' && e.lyrics) n = Math.max(n, e.lyrics.length);
   return n;
 }
 
-export function partVerses(score: Score, partIndex: number): number {
+/** パートの声部（省略時は両方の声部）の歌詞の番の数 */
+export function partVerses(score: Score, partIndex: number, voice?: number): number {
   let n = 0;
-  for (const m of score.parts[partIndex]?.measures ?? []) for (const e of m.events)
-    if (e.kind === 'note' && e.lyrics) n = Math.max(n, e.lyrics.length);
+  for (const m of score.parts[partIndex]?.measures ?? [])
+    for (const e of voice === undefined ? measureEvents(m) : voiceEvents(m, voice))
+      if (e.kind === 'note' && e.lyrics) n = Math.max(n, e.lyrics.length);
   return n;
 }
 
-/** パートの中のイベントを、曲の頭から順に並べる */
-export function partEvents(score: Score, partIndex: number): { ev: MusicEvent; measureIndex: number; eventIndex: number }[] {
+/** パートの声部（0=声部1、1=声部2）のイベントを、曲の頭から順に並べる。声部2のない小節はとばす */
+export function partEvents(score: Score, partIndex: number, voice = 0): { ev: MusicEvent; measureIndex: number; eventIndex: number }[] {
   const out: { ev: MusicEvent; measureIndex: number; eventIndex: number }[] = [];
   score.parts[partIndex]?.measures.forEach((m, measureIndex) =>
-    m.events.forEach((ev, eventIndex) => out.push({ ev, measureIndex, eventIndex })));
+    voiceEvents(m, voice).forEach((ev, eventIndex) => out.push({ ev, measureIndex, eventIndex })));
   return out;
 }
 
+/** id の音のある声部の並びと、その中の位置 */
+function voiceListOf(score: Score, partIndex: number, id: string) {
+  for (let v = 0; v < VOICE_COUNT; v++) {
+    const list = partEvents(score, partIndex, v);
+    const i = list.findIndex((x) => x.ev.id === id);
+    if (i >= 0) return { list, i };
+  }
+  return null;
+}
+
 /**
- * 歌詞を入れる次（delta=-1 なら前）の音符。休符と、タイでつながった後ろの音符はとばす。
+ * 歌詞を入れる次（delta=-1 なら前）の音符。同じ声部の中でたどり、休符と、タイでつながった後ろの音符はとばす。
  * 見つからなければ null
  */
 export function stepLyricTarget(score: Score, partIndex: number, fromId: string, delta: 1 | -1): string | null {
-  const list = partEvents(score, partIndex);
-  const i = list.findIndex((x) => x.ev.id === fromId);
-  if (i < 0) return null;
+  const found = voiceListOf(score, partIndex, fromId);
+  if (!found) return null;
+  const { list, i } = found;
   const tiedFromPrev = (k: number) => {
     const prev = list[k - 1]?.ev;
     return !!prev && prev.kind === 'note' && !!prev.tie;
@@ -71,13 +83,13 @@ export function stepLyricTarget(score: Score, partIndex: number, fromId: string,
   return null;
 }
 
-/** コードネームの次（前）の入力位置。休符にも付けられるので、すべての音符・休符を順にたどる */
+/** コードネームの次（前）の入力位置。休符にも付けられるので、同じ声部のすべての音符・休符を順にたどる */
 export function stepEventTarget(score: Score, partIndex: number, fromId: string, delta: 1 | -1): string | null {
-  const list = partEvents(score, partIndex);
-  const i = list.findIndex((x) => x.ev.id === fromId);
-  const k = i + delta;
-  if (i < 0 || k < 0 || k >= list.length) return null;
-  return list[k].ev.id;
+  const found = voiceListOf(score, partIndex, fromId);
+  if (!found) return null;
+  const k = found.i + delta;
+  if (k < 0 || k >= found.list.length) return null;
+  return found.list[k].ev.id;
 }
 
 // ---------- コードネーム ----------
