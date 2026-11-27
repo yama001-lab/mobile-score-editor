@@ -103,7 +103,6 @@ function updatePalette() {
   // 入力モードのタイは「直前の音とタイでつないで足す」なので、選択がなくても押せる
   $('#btn-tie').classList.toggle('on', !!(isNote && sel.tie));
   ($('#btn-tie') as HTMLButtonElement).disabled = !isNote && editor.mode !== 'input';
-  ($('#btn-back') as HTMLButtonElement).disabled = !editor.canUndo;
   for (const id of ['#btn-up', '#btn-down']) ($(id) as HTMLButtonElement).disabled = !isNote;
   document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) => (b.disabled = !isNote));
   for (const id of ['#btn-left', '#btn-right', '#btn-delete']) ($(id) as HTMLButtonElement).disabled = !sel;
@@ -130,13 +129,22 @@ function updatePalette() {
 
 let lastHintKey = '';
 let hintTimer = 0;
+/** モードの説明は、同じ説明につき2回まで。楽譜の上の端に小さく出し、タップで閉じる */
 function showHint(text: string) {
+  const countKey = `score-editor:hint:${lastHintKey}`;
+  const shown = Number(safeGet(countKey) ?? 0);
+  if (shown >= 2) return;
+  safeSet(countKey, String(shown + 1));
   const h = $('#hint');
   h.textContent = text;
   h.classList.add('show');
   clearTimeout(hintTimer);
-  hintTimer = window.setTimeout(() => h.classList.remove('show'), 3500);
+  hintTimer = window.setTimeout(() => h.classList.remove('show'), 3000);
 }
+$('#hint').addEventListener('click', () => {
+  clearTimeout(hintTimer);
+  $('#hint').classList.remove('show');
+});
 
 let toastTimer = 0;
 function toast(text: string, ms = 3500) {
@@ -326,7 +334,6 @@ on('#btn-dot', () => editor.toggleDot());
 on('#btn-rest', () => editor.inputRest());
 on('#btn-tie', () => { editor.toggleTie(); previewSelected(); });
 on('#btn-chord', () => editor.toggleChordMode());
-on('#btn-back', () => editor.undo());
 on('#btn-up', () => editor.transposeSelected(1));
 on('#btn-down', () => editor.transposeSelected(-1));
 on('#btn-left', () => editor.shiftSelected(-1));
@@ -378,12 +385,6 @@ on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
 
-// 道具バーが右に続いていることを示すぼかしは、端までスクロールしたら消す
-const paletteEl = $('#palette');
-function updatePaletteFade() {
-  paletteEl.classList.toggle('at-end', paletteEl.scrollLeft + paletteEl.clientWidth >= paletteEl.scrollWidth - 2);
-}
-paletteEl.addEventListener('scroll', updatePaletteFade, { passive: true });
 
 function setZoom(z: number) {
   zoom = Math.min(2.5, Math.max(0.5, z));
@@ -703,7 +704,6 @@ function setPanel(show: boolean) {
   safeSet('score-editor:keyboard', show ? '1' : '0');
   if (show) { keyboard.layout(); updateRange(); }
   requestRender();
-  updatePaletteFade();
   // 鍵盤で隠れた入力位置を見えるようにする
   requestAnimationFrame(() => requestAnimationFrame(() => focusInputPosition(true)));
 }
@@ -897,7 +897,6 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 window.addEventListener('resize', () => {
   if (panelShown()) { keyboard.layout(); updateRange(); }
   requestRender();
-  updatePaletteFade();
 });
 // 初めての人には鍵盤を出しておく
 setPanel(safeGet('score-editor:keyboard') !== '0');
