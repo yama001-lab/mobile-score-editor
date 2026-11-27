@@ -5,15 +5,15 @@
  * この楽譜の形に合わせて単純化する:
  * - 1つの段（staff）につき声部は1つ（最初に出てきた声部）。ほかの声部は捨てる
  * - ピアノなど2段のパートは、段ごとに別のパートにする
- * - 拍子は最初のものだけ（途中で変わったら、最初の拍子で小節を引き直す）
+ * - 途中の調号・拍子の変更、リピート記号、番号付きカッコ（ending）、弱起（1小節目の implicit）は取り込む
  * - 連符・装飾音は近い長さに丸める／捨てる
  */
 import { PPQ } from '../model/duration';
 import { Pitch, STEPS, Step } from '../model/pitch';
 import {
-  Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
+  Clef, MeasureAttrs, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
 } from '../model/score';
-import { TimedEvent, buildMeasures } from './timeline';
+import { Bars, TimedEvent, buildMeasures } from './timeline';
 
 export interface ImportResult {
   score: Score;
@@ -67,6 +67,14 @@ export function parseMusicXml(xml: string): ImportResult {
   let keyFifths: number | null = null;
   const tempos: { tick: number; tempo: number }[] = [];
   let pickup = 0;
+  /** 最初のパートから読んだ、小節ごとの長さと記号 */
+  const caps: number[] = [];
+  const attrs = new Map<number, MeasureAttrs>();
+  const attrOf = (mi: number) => {
+    let a = attrs.get(mi);
+    if (!a) attrs.set(mi, (a = { measure: mi }));
+    return a;
+  };
   const outParts: { name: string; staff: StaffState }[] = [];
 
   for (const partEl of kids(root, 'part')) {
@@ -81,28 +89,56 @@ export function parseMusicXml(xml: string): ImportResult {
     let divisions = 1;
     let measureStart = 0;
     const measures = kids(partEl, 'measure');
+    const first = outParts.length === 0;
+    let curTs: TimeSignature | null = null;
+    let curKey: number | null = null;
+    let openVolta: number[] | null = null;
 
     measures.forEach((mEl, mi) => {
       let pos = 0;
       let maxPos = 0;
+      let closeVolta = false;
       for (const c of kids(mEl)) {
         switch (c.localName) {
+          case 'barline': {
+            if (!first) break;
+            const rep = kid(c, 'repeat');
+            if (rep?.getAttribute('direction') === 'forward') attrOf(mi).repeatStart = true;
+            if (rep?.getAttribute('direction') === 'backward') {
+              attrOf(mi).repeatEnd = true;
+              const times = parseInt(rep.getAttribute('times') ?? '', 10);
+              if (times > 2) attrOf(mi).repeatTimes = times;
+            }
+            const end = kid(c, 'ending');
+            if (end) {
+              const type = end.getAttribute('type');
+              if (type === 'start') {
+                const nums = (end.getAttribute('number') ?? '1').split(/[,\s]+/).map((x) => parseInt(x, 10)).filter((x) => x > 0);
+                openVolta = nums.length ? nums : [1];
+              } else if (type === 'stop' || type === 'discontinue') closeVolta = true;
+            }
+            break;
+          }
           case 'attributes': {
             if (kid(c, 'divisions')) divisions = num(c, 'divisions', 1) || 1;
             if (kid(c, 'staves')) staffCount = Math.max(staffCount, num(c, 'staves', 1));
             const key = kid(c, 'key');
             if (key && kid(key, 'fifths')) {
               const f = Math.max(-7, Math.min(7, Math.round(num(key, 'fifths'))));
-              if (keyFifths === null) keyFifths = f;
-              else if (f !== keyFifths) warn.add('途中の調号の変更は反映していません（最初の調号のままです）');
+              if (first) {
+                if (keyFifths === null) keyFifths = f;
+                else if (f !== curKey) attrOf(mi).keyFifths = f;
+              }
+              curKey = f;
             }
             const time = kid(c, 'time');
             if (time && kid(time, 'beats')) {
               const ts = { beats: Math.round(num(time, 'beats', 4)) || 4, beatType: Math.round(num(time, 'beat-type', 4)) || 4 };
-              if (!timeSignature) timeSignature = ts;
-              else if (ts.beats !== timeSignature.beats || ts.beatType !== timeSignature.beatType) {
-                warn.add('途中の拍子の変更は反映していません（最初の拍子で小節を区切り直しました）');
+              if (first) {
+                if (!timeSignature) timeSignature = ts;
+                else if (!curTs || ts.beats !== curTs.beats || ts.beatType !== curTs.beatType) attrOf(mi).timeSignature = ts;
               }
+              curTs = ts;
             }
             for (const cl of kids(c, 'clef')) {
               const st = staffOf(parseInt(cl.getAttribute('number') ?? '1', 10) || 1);
@@ -175,12 +211,16 @@ export function parseMusicXml(xml: string): ImportResult {
         }
         maxPos = Math.max(maxPos, pos);
       }
-      const cap = measureCapacity(timeSignature ?? { beats: 4, beatType: 4 });
+      if (first && openVolta) attrOf(mi).volta = openVolta;
+      if (closeVolta) openVolta = null;
+      const cap = measureCapacity(curTs ?? { beats: 4, beatType: 4 });
       let len = Math.max(maxPos, cap);
-      if (mEl.getAttribute('implicit') === 'yes' && maxPos > 0 && maxPos < cap) {
+      // 1小節目が短い（implicit）なら弱起。途中の短い小節（弱起の残りなど）は休符で埋めて普通の長さにする
+      if (mi === 0 && mEl.getAttribute('implicit') === 'yes' && maxPos > 0 && maxPos < cap) {
         len = maxPos;
-        if (mi === 0 && outParts.length === 0) pickup = cap - maxPos;
+        if (first) pickup = maxPos;
       }
+      if (first) caps[mi] = mi === 0 && pickup ? pickup : cap;
       measureStart += len;
     });
 
@@ -196,13 +236,14 @@ export function parseMusicXml(xml: string): ImportResult {
 
   if (!outParts.length) throw new Error('パート（五線）が見つかりませんでした');
   const ts: TimeSignature = timeSignature ?? { beats: 4, beatType: 4 };
-  const cap = measureCapacity(ts);
+  const lastCap = caps[caps.length - 1] ?? measureCapacity(ts);
+  const capOf = (i: number) => caps[i] ?? lastCap;
+  const bars = new Bars(capOf);
   let quantized = false;
   let dropped = false;
 
   const parts: Part[] = outParts.map(({ name, staff }, i) => {
-    const events = staff.events.map((e) => ({ ...e, start: e.start + pickup }));
-    const built = buildMeasures(events, cap);
+    const built = buildMeasures(staff.events, capOf, caps.length);
     quantized ||= built.quantized;
     dropped ||= built.droppedOverlap;
     return {
@@ -216,7 +257,7 @@ export function parseMusicXml(xml: string): ImportResult {
   if (quantized) warn.add('細かいリズム（連符など）は近い長さに丸めました');
   if (dropped) warn.add('重なっていた音の一部を省きました');
 
-  const sortedTempos = tempos.map((t) => ({ measure: Math.floor((t.tick + pickup) / cap), tempo: t.tempo }));
+  const sortedTempos = tempos.map((t) => ({ measure: bars.indexAt(t.tick), tempo: t.tempo }));
   const tempo = sortedTempos.find((t) => t.measure === 0)?.tempo ?? sortedTempos[0]?.tempo ?? 100;
   const marks = new Map<number, number>();
   for (const t of sortedTempos) if (t.measure > 0) marks.set(t.measure, t.tempo);
@@ -238,6 +279,9 @@ export function parseMusicXml(xml: string): ImportResult {
     updatedAt: now,
   };
   if (tempoMarks.length) score.tempoMarks = tempoMarks;
+  if (pickup) score.pickup = pickup;
+  const measureAttrs = [...attrs.values()].filter((a) => Object.keys(a).length > 1).sort((a, b) => a.measure - b.measure);
+  if (measureAttrs.length) score.measureAttrs = measureAttrs;
   equalizeMeasureCounts(score);
   return { score, warnings: [...warn] };
 }

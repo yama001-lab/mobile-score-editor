@@ -8,8 +8,9 @@ import {
 } from '../model/pitch';
 import {
   Clef, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
-  eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
-  TimeSignature,
+  eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, measureTicks, normalizeMeasure, overwriteAt,
+  TimeSignature, capacityAt, keyAt, measureAttrsAt, reflowMeasures, restsFor, shiftMeasureMarks, timeSigAt,
+  updateMeasureAttrs,
 } from '../model/score';
 
 /** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
@@ -63,8 +64,19 @@ export class Editor {
     this.emit('score');
   }
 
+  /** カーソルのある小節の長さ（ティック） */
   get capacity() {
-    return measureCapacity(this.score.timeSignature);
+    return capacityAt(this.score, this.cursor.measureIndex);
+  }
+
+  /** その小節の長さ（拍子の変更・弱起を反映） */
+  capacityOf(measure: number) {
+    return capacityAt(this.score, measure);
+  }
+
+  /** その小節で有効な調号 */
+  keyOf(measure: number) {
+    return keyAt(this.score, measure);
   }
 
   get canUndo() {
@@ -203,7 +215,7 @@ export class Editor {
   /** 白鍵の位置（五線上の位置）で入力。調号の変化を付ける。手書き認識でも使う想定。 */
   inputDiatonic(index: number, alter?: number | null, chord = false) {
     const p = fromDiatonic(index);
-    p.alter = alter ?? keyAlter(this.score.keyFifths, p.step);
+    p.alter = alter ?? keyAlter(this.keyOf(this.cursor.measureIndex), p.step);
     this.inputPitches([p], chord);
   }
 
@@ -212,7 +224,7 @@ export class Editor {
     const locs = ids.map((id) => findEvent(this.score, id)).filter((l): l is EventLocation => !!l);
     if (!locs.length) return;
     this.mutate(() => {
-      const touched = new Set<Measure>();
+      const touched = new Map<Measure, number>();
       for (const id of ids) {
         const loc = findEvent(this.score, id);
         if (!loc) continue;
@@ -222,9 +234,9 @@ export class Editor {
         m.events[loc.eventIndex] = makeRest(ev.duration, ev.dots);
         const prev = loc.eventIndex > 0 ? m.events[loc.eventIndex - 1] : undefined;
         if (prev?.kind === 'note') delete prev.tie;
-        touched.add(m);
+        touched.set(m, loc.measureIndex);
       }
-      for (const m of touched) normalizeMeasure(m, this.capacity);
+      for (const [m, mi] of touched) normalizeMeasure(m, this.capacityOf(mi));
       const first = locs[0];
       const m = this.score.parts[first.partIndex].measures[first.measureIndex];
       this.cursor = { ...first, eventIndex: Math.min(first.eventIndex, m.events.length - 1) };
@@ -234,7 +246,7 @@ export class Editor {
 
   /** MIDI番号で入力（画面の鍵盤から使う）。chord なら選択中の音符に重ねる。 */
   inputMidi(midi: number, chord = false) {
-    this.inputPitches([fromMidi(midi, this.score.keyFifths)], chord);
+    this.inputPitches([fromMidi(midi, this.keyOf(this.cursor.measureIndex))], chord);
   }
 
   /** 音名キー（A〜G）で入力。直前の音にいちばん近いオクターブを選ぶ。 */
@@ -288,8 +300,8 @@ export class Editor {
   }
 
   private ensureMeasure(index: number) {
-    const cap = this.capacity;
     while (this.score.parts[0].measures.length <= index) {
+      const cap = this.capacityOf(this.score.parts[0].measures.length);
       for (const p of this.score.parts) p.measures.push(createMeasure(cap));
     }
   }
@@ -300,7 +312,6 @@ export class Editor {
 
   private placeAtCursorRaw(pitches: Pitch[] | null) {
     {
-      const cap = this.capacity;
       let { partIndex, measureIndex, eventIndex } = this.cursor;
       const part = this.score.parts[partIndex];
       let total = ticksOf(this.inputDuration, this.inputDots);
@@ -308,6 +319,7 @@ export class Editor {
       let prevNote: NoteEvent | null = null;
       while (total > 0) {
         this.ensureMeasure(measureIndex);
+        const cap = this.capacityOf(measureIndex);
         const m = part.measures[measureIndex];
         const start = m.events.slice(0, eventIndex).reduce((s, e) => s + eventTicks(e), 0);
         if (start >= cap || eventIndex >= m.events.length) {
@@ -377,7 +389,7 @@ export class Editor {
         if (prev.kind === 'note') delete prev.tie;
       }
       const before = m.events.length;
-      normalizeIfEmpty(m, this.capacity);
+      normalizeIfEmpty(m, this.capacityOf(loc.measureIndex));
       if (m.events.length !== before) this.selectedId = m.events[0]?.id ?? null;
       this.cursor = { ...loc, eventIndex: Math.min(loc.eventIndex, m.events.length - 1) };
     });
@@ -387,7 +399,7 @@ export class Editor {
     const loc = this.selectedLocation;
     if (!loc) return;
     this.mutate(() => {
-      const cap = this.capacity;
+      const cap = this.capacityOf(loc.measureIndex);
       const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
       const ev = m.events[loc.eventIndex];
       const start = m.events.slice(0, loc.eventIndex).reduce((s, e) => s + eventTicks(e), 0);
@@ -420,7 +432,7 @@ export class Editor {
       for (const i of idxs) {
         const p = note.pitches[i];
         const np = fromDiatonic(diatonicIndex(p) + steps);
-        np.alter = keyAlter(this.score.keyFifths, np.step);
+        np.alter = keyAlter(this.keyOf(loc.measureIndex), np.step);
         note.pitches[i] = np;
       }
       const target = note.pitches[this.selectedPitchIndex];
@@ -447,7 +459,7 @@ export class Editor {
       for (const i of this.chordTargets(note)) {
         const p = note.pitches[i];
         // 同じボタンをもう一度押したら調号どおりに戻す
-        note.pitches[i] = { ...p, alter: p.alter === alter ? keyAlter(this.score.keyFifths, p.step) : alter };
+        note.pitches[i] = { ...p, alter: p.alter === alter ? keyAlter(this.keyOf(loc.measureIndex), p.step) : alter };
       }
     });
   }
@@ -511,8 +523,20 @@ export class Editor {
 
   addMeasure(after = this.score.parts[0].measures.length - 1) {
     this.mutate(() => {
-      for (const p of this.score.parts) p.measures.splice(after + 1, 0, createMeasure(this.capacity));
-      for (const t of this.score.tempoMarks ?? []) if (t.measure > after) t.measure++;
+      const at = after + 1;
+      if (at === 0 && this.score.pickup) {
+        // 弱起の前に挿入：もとの弱起の小節は普通の長さにして、新しい小節を弱起にする
+        const full = measureCapacity(timeSigAt(this.score, 0));
+        for (const p of this.score.parts) {
+          const m0 = p.measures[0];
+          m0.events = [...restsFor(full - measureTicks(m0)), ...m0.events];
+          normalizeMeasure(m0, full);
+        }
+      }
+      for (const p of this.score.parts) p.measures.splice(at, 0, { id: '', events: [] });
+      shiftMeasureMarks(this.score, at, 1);
+      const cap = this.capacityOf(at);
+      for (const p of this.score.parts) p.measures[at] = createMeasure(cap);
     });
   }
 
@@ -541,14 +565,9 @@ export class Editor {
     if (this.score.parts[0].measures.length <= 1) return;
     this.mutate(() => {
       for (const p of this.score.parts) p.measures.splice(index, 1);
-      if (this.score.tempoMarks) {
-        // 消した小節のテンポ変更は次の小節へ引き継ぐ（後ろにすでにあればそちらを優先）
-        const marks = this.score.tempoMarks;
-        for (const t of marks) if (t.measure > index) t.measure--;
-        const n = this.score.parts[0].measures.length;
-        this.score.tempoMarks = marks.filter((t, i) =>
-          t.measure >= 1 && t.measure < n && marks.map((u) => u.measure).lastIndexOf(t.measure) === i);
-      }
+      // 消した小節のテンポ・拍子・調号の変更は次の小節へ引き継ぐ（後ろにすでにあればそちらを優先）
+      shiftMeasureMarks(this.score, index, -1);
+      if (index === 0) delete this.score.pickup;
       const n = this.score.parts[0].measures.length;
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: Math.min(index, n - 1), eventIndex: 0 };
       this.selectedId = null;
@@ -574,29 +593,151 @@ export class Editor {
     });
   }
 
+  /** 曲頭の拍子を変える（途中の拍子変更がある所まで小節を引き直す） */
   setTimeSignature(ts: TimeSignature) {
+    this.setTimeSignatureAt(0, ts);
+  }
+
+  /**
+   * measure 小節目から拍子を変える。null なら途中の拍子変更を消して、前の拍子に戻す。
+   * その小節から次の拍子変更の手前までの音を、新しい小節の長さに並べ直す（小節をまたぐ音はタイで分ける）。
+   */
+  setTimeSignatureAt(measure: number, ts: TimeSignature | null) {
+    if (measure === 0 && !ts) return;
     this.mutate(() => {
-      const oldCap = measureCapacity(this.score.timeSignature);
-      this.score.timeSignature = { ...ts };
-      const cap = measureCapacity(ts);
-      // テンポ変更は、同じ時間位置を含む小節へ移す
-      if (this.score.tempoMarks) {
-        const seen = new Set<number>();
-        this.score.tempoMarks = this.score.tempoMarks
-          .map((t) => ({ ...t, measure: Math.floor((t.measure * oldCap) / cap) }))
-          .filter((t) => t.measure >= 1 && !seen.has(t.measure) && !!seen.add(t.measure));
+      const score = this.score;
+      if (measure === 0) score.timeSignature = { ...ts! };
+      else {
+        const prev = timeSigAt(score, measure - 1);
+        const same = !ts || (ts.beats === prev.beats && ts.beatType === prev.beatType);
+        updateMeasureAttrs(score, measure, (a) => { a.timeSignature = same ? undefined : { ...ts! }; });
       }
-      for (const p of this.score.parts) reflowPart(p, cap);
-      equalizeMeasureCounts(this.score);
+      const n = score.parts[0].measures.length;
+      let segEnd = n;
+      for (const a of score.measureAttrs ?? []) if (a.measure > measure && a.timeSignature) { segEnd = Math.min(segEnd, a.measure); }
+      this.rebar(measure, segEnd);
+      this.cursor = { partIndex: this.cursor.partIndex, measureIndex: Math.min(measure, score.parts[0].measures.length - 1), eventIndex: 0 };
+      this.selectedId = null;
+    });
+  }
+
+  /**
+   * [segStart, segEnd) の小節を、今の拍子（と弱起）の長さで引き直す。
+   * 中にあるテンポ変更・小節の記号は同じ時間位置の小節へ、後ろのものは小節数の増減だけずらす。
+   */
+  private rebar(segStart: number, segEnd: number) {
+    const score = this.score;
+    const oldCount = segEnd - segStart;
+    const ts = timeSigAt(score, segStart);
+    const full = measureCapacity(ts);
+    const capOf = (j: number) => (segStart + j === 0 ? capacityAt(score, 0) : full);
+    // もとの小節の開始位置（区間の頭から何ティック目か）
+    const oldStarts: number[] = [];
+    let t = 0;
+    for (let i = segStart; i < segEnd; i++) {
+      oldStarts.push(t);
+      t += Math.max(...score.parts.map((p) => measureTicks(p.measures[i])));
+    }
+    const segs = score.parts.map((p) => reflowMeasures(p.measures.slice(segStart, segEnd), capOf));
+    const newCount = Math.max(...segs.map((x) => x.length));
+    segs.forEach((x) => { while (x.length < newCount) x.push(createMeasure(capOf(x.length))); });
+    score.parts.forEach((p, i) => p.measures.splice(segStart, oldCount, ...segs[i]));
+    const newIndexOf = (tick: number) => {
+      let acc = 0;
+      for (let j = 0; j < newCount; j++) {
+        acc += capOf(j);
+        if (tick < acc) return segStart + j;
+      }
+      return segStart + newCount - 1;
+    };
+    const remap = (m: number) => {
+      if (m <= segStart) return m;
+      if (m >= segEnd) return m + newCount - oldCount;
+      return newIndexOf(oldStarts[m - segStart]);
+    };
+    if (score.tempoMarks) {
+      const seen = new Set<number>();
+      score.tempoMarks = score.tempoMarks
+        .map((x) => ({ ...x, measure: remap(x.measure) }))
+        .filter((x) => x.measure >= 1 && !seen.has(x.measure) && !!seen.add(x.measure));
+    }
+    if (score.measureAttrs) {
+      const out: typeof score.measureAttrs = [];
+      for (const a of score.measureAttrs) {
+        const m = remap(a.measure);
+        const prev = out.find((u) => u.measure === m);
+        if (prev) Object.assign(prev, { ...a, measure: m });
+        else out.push({ ...a, measure: m });
+      }
+      score.measureAttrs = out.sort((a, b) => a.measure - b.measure);
+    }
+  }
+
+  /** measure 小節目から調号を変える。null なら途中の調号変更を消す。音の高さは変えない（必要なら臨時記号が付く） */
+  setKeyAt(measure: number, fifths: number | null) {
+    if (measure === 0) { if (fifths !== null) this.setKeySignature(fifths); return; }
+    this.mutate(() => {
+      const prev = keyAt(this.score, measure - 1);
+      updateMeasureAttrs(this.score, measure, (a) => { a.keyFifths = fifths === null || fifths === prev ? undefined : fifths; });
+    });
+  }
+
+  /** リピート記号・番号付きカッコを付け外しする */
+  setRepeat(measure: number, patch: { repeatStart?: boolean; repeatEnd?: boolean; volta?: number[] | null; repeatTimes?: number | null }) {
+    this.mutate(() => {
+      updateMeasureAttrs(this.score, measure, (a) => {
+        if ('repeatStart' in patch) a.repeatStart = patch.repeatStart || undefined;
+        if ('repeatEnd' in patch) a.repeatEnd = patch.repeatEnd || undefined;
+        if ('volta' in patch) a.volta = patch.volta?.length ? [...patch.volta].sort((x, y) => x - y) : undefined;
+        if ('repeatTimes' in patch) a.repeatTimes = patch.repeatTimes && patch.repeatTimes > 2 ? patch.repeatTimes : undefined;
+        if (!a.repeatEnd) a.repeatTimes = undefined;
+      });
+    });
+  }
+
+  /**
+   * 弱起（1小節目を短くする）。ticks = 0 で普通の小節に戻す。
+   * 縮めるとき、1小節目の前の方が休符だけなら後ろを残し（休符のあとに弱起の音を書いた場合）、
+   * そうでなければ前を残す。伸ばすときは前に休符を足す。
+   */
+  setPickup(ticks: number) {
+    const full = measureCapacity(timeSigAt(this.score, 0));
+    const want = ticks > 0 && ticks < full ? ticks : 0;
+    if ((this.score.pickup ?? 0) === want) return;
+    this.mutate(() => {
+      const newCap = want || full;
+      for (const p of this.score.parts) {
+        const m0 = p.measures[0];
+        const cur = measureTicks(m0);
+        if (newCap >= cur) {
+          m0.events = [...restsFor(newCap - cur), ...m0.events];
+        } else {
+          const drop = cur - newCap;
+          const [head, tail] = reflowMeasures([m0], (j) => (j === 0 ? drop : newCap));
+          const headIsRest = head.events.every((e) => e.kind === 'rest');
+          if (headIsRest) m0.events = tail?.events ?? restsFor(newCap);
+          else m0.events = reflowMeasures([m0], (j) => (j === 0 ? newCap : drop))[0].events;
+          const last = m0.events[m0.events.length - 1];
+          if (last?.kind === 'note' && !headIsRest) delete last.tie;
+        }
+        normalizeMeasure(m0, newCap);
+      }
+      if (want) this.score.pickup = want;
+      else delete this.score.pickup;
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: 0, eventIndex: 0 };
       this.selectedId = null;
     });
   }
 
+  /** 小節の記号（表示用） */
+  measureAttrs(measure: number) {
+    return measureAttrsAt(this.score, measure);
+  }
+
   addPart(clef: Clef) {
     this.mutate(() => {
       const n = this.score.parts[0].measures.length;
-      this.score.parts.push(createPart(clef === 'bass' ? '左手' : '譜表' + (this.score.parts.length + 1), clef, n, this.capacity));
+      this.score.parts.push(createPart(clef === 'bass' ? '左手' : '譜表' + (this.score.parts.length + 1), clef, n, (i) => this.capacityOf(i)));
     });
   }
 

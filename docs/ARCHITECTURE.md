@@ -19,6 +19,18 @@
 - 音高は `{ step, alter, octave }`。`toMidi()` / `fromMidi()` で MIDI 番号と変換
 - 全パートの小節数は常に同じ。小節はいつも音符と休符でちょうど埋まっている
 
+### 小節ごとの記号と弱起
+
+- `Score.measureAttrs`：小節番号つきで、その小節からの拍子（`timeSignature`）・調号（`keyFifths`）の変更、
+  リピート（`repeatStart` / `repeatEnd` / `repeatTimes`）、番号付きカッコ（`volta`）を持つ。全パート共通
+- `Score.pickup`：弱起。1小節目の長さ（ティック）
+- 小節の長さ・拍子・調号は必ず `capacityAt()` / `timeSigAt()` / `keyAt()` で小節ごとに求める
+  （`score.timeSignature` / `score.keyFifths` は曲頭の値）
+- 小節を足す・消すときは `shiftMeasureMarks()` でテンポ変更と小節の記号の番号をずらす
+- 再生の順番は `playOrder()`（リピートと番号付きカッコをたどる）。`buildSchedule()` はこの順に鳴らす
+- 途中の拍子変更は `Editor.setTimeSignatureAt()`。その小節から次の拍子変更の手前までを引き直す
+- 途中の調号変更 `Editor.setKeyAt()` は音の高さを変えない
+
 ## 画面の配置
 
 - `header.topbar`：アプリ全体の操作（ファイル・再生・元に戻す・設定・書き出し）

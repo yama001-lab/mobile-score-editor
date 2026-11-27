@@ -4,7 +4,7 @@
  */
 import { decompose } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { CapacityOf, Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 export interface TimedEvent {
   /** 曲の頭からのティック */
@@ -28,7 +28,31 @@ export interface BuildResult {
   droppedOverlap: boolean;
 }
 
-export function buildMeasures(events: TimedEvent[], capacity: number, minMeasures = 1): BuildResult {
+/** 小節の長さが小節ごとに違ってもよい、ティック → 小節番号の対応 */
+export class Bars {
+  private ends: number[] = [];
+  constructor(private capacity: CapacityOf) {}
+  cap(i: number) {
+    return typeof this.capacity === 'number' ? this.capacity : this.capacity(i);
+  }
+  /** i 小節目の終わりのティック */
+  end(i: number) {
+    while (this.ends.length <= i) this.ends.push((this.ends[this.ends.length - 1] ?? 0) + this.cap(this.ends.length));
+    return this.ends[i];
+  }
+  start(i: number) {
+    return i === 0 ? 0 : this.end(i - 1);
+  }
+  /** tick を含む小節の番号 */
+  indexAt(tick: number) {
+    let i = 0;
+    while (this.end(i) <= tick) i++;
+    return i;
+  }
+}
+
+export function buildMeasures(events: TimedEvent[], capacity: CapacityOf, minMeasures = 1): BuildResult {
+  const bars = new Bars(capacity);
   let quantized = false;
   let droppedOverlap = false;
   const sorted = events
@@ -46,8 +70,8 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
 
   const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean) => {
     while (len > 0) {
-      const mi = Math.floor(cursor / capacity);
-      const room = (mi + 1) * capacity - cursor;
+      const mi = bars.indexAt(cursor);
+      const room = bars.end(mi) - cursor;
       const take = Math.min(room, len);
       const pieces = decompose(take);
       (buckets[mi] ??= []);
@@ -76,13 +100,13 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
     emit(ticks, e.pitches, e.pitches ? e.tie : false);
   }
 
-  const count = Math.max(minMeasures, Math.ceil(cursor / capacity), 1);
-  if (cursor < count * capacity) emit(count * capacity - cursor, null, false);
+  const count = Math.max(minMeasures, cursor > 0 ? bars.indexAt(cursor - 1) + 1 : 1, 1);
+  if (cursor < bars.end(count - 1)) emit(bars.end(count - 1) - cursor, null, false);
 
   const measures: Measure[] = [];
   for (let i = 0; i < count; i++) {
     const m: Measure = { id: uid(), events: buckets[i] ?? [] };
-    normalizeMeasure(m, capacity);
+    normalizeMeasure(m, bars.cap(i));
     measures.push(m);
   }
   return { measures, quantized, droppedOverlap };

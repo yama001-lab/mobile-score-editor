@@ -5,7 +5,7 @@ import { parseMusicXml } from '../src/import/musicxml';
 import { importBytes } from '../src/import/index';
 import { encodeScore, extractEmbeddedScore } from '../src/import/embed';
 import { toMusicXml } from '../src/export/musicxml';
-import { createScore, makeNote, measureCapacity, measureTicks, Score } from '../src/model/score';
+import { capacityAt, createScore, makeNote, measureTicks, Score } from '../src/model/score';
 
 const note = (step: string, octave: number, dur: number, type: string, extra = '') =>
   `<note>${extra.includes('<chord/>') ? '<chord/>' : ''}<pitch><step>${step}</step><octave>${octave}</octave></pitch>`
@@ -21,8 +21,7 @@ const wrap = (parts: string, partList: string) => `<?xml version="1.0" encoding=
 </score-partwise>`;
 
 function check(score: Score) {
-  const cap = measureCapacity(score.timeSignature);
-  for (const p of score.parts) for (const m of p.measures) expect(measureTicks(m)).toBe(cap);
+  for (const p of score.parts) p.measures.forEach((m, i) => expect(measureTicks(m)).toBe(capacityAt(score, i)));
   const n = score.parts[0].measures.length;
   for (const p of score.parts) expect(p.measures.length).toBe(n);
 }
@@ -67,7 +66,7 @@ describe('MusicXML の取り込み', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('ピアノの2段は右手・左手の2パートに分け、弱起は1小節目の後ろに寄せる', () => {
+  it('ピアノの2段は右手・左手の2パートに分け、1小節目が短ければ弱起にする', () => {
     const xml = wrap(`<part id="P1">
       <measure number="0" implicit="yes">
         <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>
@@ -89,9 +88,10 @@ describe('MusicXML の取り込み', () => {
     expect(score.parts.map((p) => [p.name, p.clef])).toEqual([['右手', 'treble'], ['左手', 'bass']]);
     check(score);
     expect(score.parts[0].measures).toHaveLength(2);
+    expect(score.pickup).toBe(480);
     const m0 = score.parts[0].measures[0].events;
-    expect(m0[m0.length - 1].kind === 'note' && m0[m0.length - 1]).toMatchObject({ duration: 'q', pitches: [{ step: 'G' }] });
-    expect(m0[0].kind).toBe('rest');
+    expect(m0).toHaveLength(1);
+    expect(m0[0].kind === 'note' && m0[0]).toMatchObject({ duration: 'q', pitches: [{ step: 'G' }] });
     expect(score.parts[0].measures[1].events).toHaveLength(1);
     expect(warnings.some((w) => w.includes('声部'))).toBe(true);
   });
