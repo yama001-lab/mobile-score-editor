@@ -12,7 +12,8 @@ import {
   TimeSignature,
 } from '../model/score';
 
-export type Mode = 'select' | 'input';
+/** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
+export type Mode = 'select' | 'input' | 'pen';
 
 export interface Cursor {
   partIndex: number;
@@ -200,10 +201,35 @@ export class Editor {
   // ---------- 入力 ----------
 
   /** 白鍵の位置（五線上の位置）で入力。調号の変化を付ける。手書き認識でも使う想定。 */
-  inputDiatonic(index: number) {
+  inputDiatonic(index: number, alter?: number | null, chord = false) {
     const p = fromDiatonic(index);
-    p.alter = keyAlter(this.score.keyFifths, p.step);
-    this.inputPitches([p]);
+    p.alter = alter ?? keyAlter(this.score.keyFifths, p.step);
+    this.inputPitches([p], chord);
+  }
+
+  /** 手書きの消しゴム：指定の音符・休符をまとめて休符に戻す（元に戻すは1回） */
+  eraseEvents(ids: string[]) {
+    const locs = ids.map((id) => findEvent(this.score, id)).filter((l): l is EventLocation => !!l);
+    if (!locs.length) return;
+    this.mutate(() => {
+      const touched = new Set<Measure>();
+      for (const id of ids) {
+        const loc = findEvent(this.score, id);
+        if (!loc) continue;
+        const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
+        const ev = m.events[loc.eventIndex];
+        if (ev.kind === 'rest') continue;
+        m.events[loc.eventIndex] = makeRest(ev.duration, ev.dots);
+        const prev = loc.eventIndex > 0 ? m.events[loc.eventIndex - 1] : undefined;
+        if (prev?.kind === 'note') delete prev.tie;
+        touched.add(m);
+      }
+      for (const m of touched) normalizeMeasure(m, this.capacity);
+      const first = locs[0];
+      const m = this.score.parts[first.partIndex].measures[first.measureIndex];
+      this.cursor = { ...first, eventIndex: Math.min(first.eventIndex, m.events.length - 1) };
+      this.selectedId = null;
+    });
   }
 
   /** MIDI番号で入力（画面の鍵盤から使う）。chord なら選択中の音符に重ねる。 */

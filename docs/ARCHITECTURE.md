@@ -37,12 +37,19 @@
 - 再生は `src/audio/`。`buildSchedule()` が楽譜を秒単位の音の一覧にし（タイは1音にまとめる）、
   `Player` が少し先までを Web Audio で予約していく。音色はパートの `instrument`（`piano` / `synth`）
 
-### ステップ3：五線への手書き入力
-- 描画結果の `MeasureHit`（小節の位置、第1線のY、線の間隔、音部記号）で、ペンの座標を五線上の位置に直せる
-  （`diatonicAtY()`）。認識した音符は `editor.setInputDuration()` と `editor.inputDiatonic()` で入れる
-- ペンは Pointer Events（`pointerType` が `pen` または `touch`）。安価なスタイラスは `touch` として届くことが多い
-- 画面の入口は道具バーの「手書き」（`[data-mode="pen"]`、いまは準備中の案内を出すだけ）。
-  `Editor` の `Mode` に `'pen'` を足し、手書きモードの間は `#score` の上に描画用の層を重ねて線を受け取る
+### ステップ3：五線への手書き入力（実装済み）
+- `src/handwriting/pen.ts` の `PenLayer`：手書きモード（`Mode` の `'pen'`）の間だけ `#score` の上に canvas を重ね、
+  線を集める。書き終えて 650ms 待つか、前の記号から右に離れて書き始めたら `onRecognize` に渡す。
+  `pointerType` が `pen` ならいつも書く。`touch` は「指で書く」がオンのときだけ（安価なスタイラスは `touch` で届く）。
+  2本指は書きかけを捨てて手動でスクロール、接触面の大きいもの（手のひら）は無視
+- `src/handwriting/recognize.ts`：機械学習なしの図形判定。長さは五線の間隔を単位に比べる。
+  `clusterStrokes()` で横に離れた線を別の記号に分け、`recognizeCluster()` が
+  符幹（長い縦の線分）→ 頭（塗りつぶしか輪か）→ 旗・付点・臨時記号、の順に調べる。
+  符幹がなければ全音符・黒丸・休符・臨時記号・点・消しゴムを調べる
+- `src/handwriting/apply.ts`：読み取り結果を `Editor` の操作に変える（入力位置より右なら続けて入れる、
+  既存の音符の真上・真下なら和音、点・臨時記号は近くの音符へ、消しゴムは `editor.eraseEvents()`）
+- 精度を上げるときは `tests/handwriting.test.ts` に形を足してから `recognize.ts` のしきい値を変える。
+  手ぶれ（乱数のずれ）を入れた試験もある
 
 ### ステップ4：PDF楽譜の取り込み
 - OMR（Audiveris など）の出力は MusicXML が一般的なので、`MusicXML → Score` の変換器を `src/import/` に作る
