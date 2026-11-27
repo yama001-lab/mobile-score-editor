@@ -4,7 +4,8 @@
  * - PDF では日本語が PDF 標準フォントにないため、textSink に渡して画像で載せる（export/pdf.ts）
  */
 import { Annotation, StaveNote } from 'vexflow/bravura';
-import { MusicEvent, Score } from '../model/score';
+import { MusicEvent, Score, measureEvents } from '../model/score';
+import { resolveSpanners } from '../model/marks';
 import { formatChord, partVerses, splitSyllable } from '../model/texts';
 
 export interface TextFont {
@@ -115,12 +116,20 @@ export interface PartSpacing {
   above: number;
   /** 譜表の下に足す高さ（歌詞の行の分） */
   below: number;
+  /** 歌詞の行の数（声部1の番の数＋声部2の番の数） */
   verses: number;
+  /** 声部1の歌詞の番の数。声部2の歌詞はその下の行に書く */
+  voice1Verses: number;
   hasChord: boolean;
   hasText: boolean;
   /** 強弱記号・ヘアピンがあるとき、歌詞はその下に下げる */
   hasDynamics: boolean;
+  /** 声部2のスラー（五線の下に描く）があるとき、歌詞はその下に下げる */
+  hasLowSlur: boolean;
 }
+
+/** 五線の下のスラーの分、歌詞を下げる高さ */
+const LOW_SLUR_ROW = 14;
 
 /** 強弱記号・ヘアピンの行の高さ（歌詞をその下に置く分） */
 const DYNAMICS_ROW = 28;
@@ -131,23 +140,27 @@ export function partSpacing(score: Score): PartSpacing[] {
     let hasText = false;
     let hasDynamics = false;
     const ids = new Set<string>();
-    for (const m of part.measures) for (const e of m.events) {
+    for (const m of part.measures) for (const e of measureEvents(m)) {
       if (e.chord) hasChord = true;
       if (e.text) hasText = true;
       if (e.dynamic) hasDynamics = true;
       ids.add(e.id);
     }
     if (score.spanners?.some((s) => s.kind !== 'slur' && ids.has(s.from))) hasDynamics = true;
-    const verses = partVerses(score, pi);
+    const hasLowSlur = resolveSpanners(score).some((r) => r.partIndex === pi && r.voice === 1 && r.spanner.kind === 'slur');
+    const voice1Verses = partVerses(score, pi, 0);
+    const verses = voice1Verses + partVerses(score, pi, 1);
     const rehearsal = pi === 0 && score.parts[0].measures.some((m) => m.rehearsal);
     const need = (hasChord ? 20 : 0) + (hasText ? 18 : 0) + (rehearsal ? 24 : 0);
     return {
       above: Math.max(0, need - 22),
-      below: verses ? verses * LYRIC_LINE + 8 + (hasDynamics ? DYNAMICS_ROW : 0) : 0,
+      below: verses ? verses * LYRIC_LINE + 8 + (hasDynamics ? DYNAMICS_ROW : 0) + (hasLowSlur ? LOW_SLUR_ROW : 0) : 0,
       verses,
+      voice1Verses,
       hasChord,
       hasText,
       hasDynamics,
+      hasLowSlur,
     };
   });
 }
@@ -164,6 +177,8 @@ type Ctx = {
 export interface SystemTextEntry {
   partIndex: number;
   measureIndex: number;
+  /** 0=声部1、1=声部2（省略時は声部1） */
+  voice?: number;
   ev: MusicEvent;
   note: StaveNote;
   topLineY: number;
@@ -246,7 +261,7 @@ export function drawSystemTexts(
     }
     const chordY = Math.min(top - 10, minTop - 7);
     const textY = sp.hasChord ? chordY - 19 : chordY;
-    const lyricY = Math.max(bottom + 24, maxBottom + 17) + (sp.hasDynamics ? DYNAMICS_ROW : 0);
+    const lyricY = Math.max(bottom + 24, maxBottom + 17) + (sp.hasDynamics ? DYNAMICS_ROW : 0) + (sp.hasLowSlur ? LOW_SLUR_ROW : 0);
     if (pi === 0) rehearsalBase = (sp.hasText ? textY : sp.hasChord ? chordY : top - 10) - 22;
 
     for (const e of list) {
@@ -274,13 +289,16 @@ export function drawSystemTexts(
       // 歌詞
       if (ev.kind !== 'note') continue;
       const verses = Math.max(ev.lyrics?.length ?? 0, focus?.kind === 'lyric' && focus.eventId === ev.id ? (focus.verse ?? 0) + 1 : 0);
+      // 声部2の歌詞は、声部1の歌詞の行の下に続けて書く
+      const voice = e.voice ?? 0;
+      const row0 = voice ? sp.voice1Verses : 0;
       for (let v = 0; v < verses; v++) {
         const raw = ev.lyrics?.[v] ?? '';
-        const y = lyricY + v * LYRIC_LINE;
+        const y = lyricY + (row0 + v) * LYRIC_LINE;
         const { text, hyphen } = splitSyllable(raw);
         const w = text ? textWidth(text, FONTS.lyric) : 0;
         const x = cx - w / 2;
-        const key = `${pi}:${v}`;
+        const key = `${pi}:${voice}:${v}`;
         if (isFocus('lyric', v)) focusBox(ctx, Math.min(x, cx - 7) - 3, y - 14, Math.max(w, 14) + 6, 19);
         if (!text) continue;
         const prev = state.pendingHyphen.get(key);

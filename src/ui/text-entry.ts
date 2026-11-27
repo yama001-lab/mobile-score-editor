@@ -168,9 +168,10 @@ export class TextEntry {
     let id: string | null = null;
     if (sel && (kind !== 'lyric' || sel.kind === 'note')) id = sel.id;
     if (!id) {
-      const list = partEvents(score, part);
       const c = ed.cursor;
-      const at = list.findIndex((x) => x.measureIndex === c.measureIndex && x.eventIndex === c.eventIndex);
+      const list = partEvents(score, part, c.voice ?? 0);
+      // 入力位置（声部2のない小節にいるときは、その後ろの最初の音）
+      const at = list.findIndex((x) => x.measureIndex > c.measureIndex || (x.measureIndex === c.measureIndex && x.eventIndex >= c.eventIndex));
       if (kind === 'lyric') {
         // 入力位置の直前の音符（入れたばかりの音符）、なければ最初の音符
         const before = list.slice(0, at < 0 ? list.length : at).reverse().find((x) => x.ev.kind === 'note');

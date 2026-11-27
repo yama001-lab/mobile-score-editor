@@ -33,8 +33,11 @@ function addArt(ev: TimedEvent, a: Articulation) {
   if (!list.includes(a)) list.push(a);
 }
 
-/** <note> の記号を読む。chord=true は和音の2音目以降（ev は和音の音符） */
-export function readNoteMarks(note: Element, st: MarkState, ev: TimedEvent, chord: boolean): void {
+/**
+ * <note> の記号を読む。chord=true は和音の2音目以降（ev は和音の音符）。
+ * スラーの番号は声部ごとに数える（声部1と声部2で同じ番号が使われることがある）
+ */
+export function readNoteMarks(note: Element, st: MarkState, ev: TimedEvent, chord: boolean, voice = '1'): void {
   if (!chord) {
     if (st.pendingDynamic) {
       (ev.marks ??= {}).dynamic = st.pendingDynamic;
@@ -47,14 +50,14 @@ export function readNoteMarks(note: Element, st: MarkState, ev: TimedEvent, chor
     const slurs = kids(n, 'slur');
     for (const sl of slurs) {
       if (sl.getAttribute('type') !== 'stop') continue;
-      const num = sl.getAttribute('number') ?? '1';
+      const num = `${voice}:${sl.getAttribute('number') ?? '1'}`;
       const from = st.openSlurs.get(num);
       if (from && from !== ev) st.done.push({ kind: 'slur', from, to: ev });
       st.openSlurs.delete(num);
     }
     for (const sl of slurs) {
       if (sl.getAttribute('type') !== 'start') continue;
-      st.openSlurs.set(sl.getAttribute('number') ?? '1', ev);
+      st.openSlurs.set(`${voice}:${sl.getAttribute('number') ?? '1'}`, ev);
     }
     for (const arts of kids(n, 'articulations')) {
       for (const a of kids(arts)) {

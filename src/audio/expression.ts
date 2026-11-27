@@ -31,9 +31,10 @@ export class DynamicsTrack {
   private levels = new Map<string, number>();
 
   constructor(score: Score, partIndex: number) {
+    // 強さは声部1でたどる（声部2の音は同じ時刻の声部1の強さで鳴らす。声部2の強弱記号はその音だけ）
     const seq = flatEvents(score, partIndex);
     const hairpins = resolveSpanners(score)
-      .filter((r) => r.partIndex === partIndex && r.spanner.kind !== 'slur')
+      .filter((r) => r.partIndex === partIndex && r.voice === 0 && r.spanner.kind !== 'slur')
       .sort((a, b) => a.from.index - b.from.index);
     let cur = DEFAULT_LEVEL;
     let hp = 0;

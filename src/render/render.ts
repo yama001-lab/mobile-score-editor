@@ -545,7 +545,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
           b.events.forEach((ev, i) => {
             allNotes.set(ev.id, { note: b.notes[i], system: si });
             textEntries.push({
-              partIndex: pi, measureIndex: mi, ev, note: b.notes[i],
+              partIndex: pi, measureIndex: mi, voice: b.voiceIndex, ev, note: b.notes[i],
               topLineY: hit.topLineY, bottomLineY: hit.topLineY + hit.lineSpacing * 4,
             });
             partOf.set(ev.id, pi);
@@ -557,10 +557,11 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
         }
 
         // 範囲選択の帯
-        const inRange = evHits.filter((h) => opts.rangeIds?.has(h.id));
+        // 範囲は声部2だけのこともある（声部2の1音のコピー・貼り付け）ので、両方の声部から帯の端を決める
+        const inRange = voiceHits.flat().filter((h) => opts.rangeIds?.has(h.id));
         if (inRange.length) {
-          const l = Math.max(inRange[0].left, inRange[0].x - 12);
-          const r = inRange[inRange.length - 1].right;
+          const l = Math.min(...inRange.map((h) => Math.max(h.left, h.x - 12)));
+          const r = Math.max(...inRange.map((h) => h.right));
           ctx.save();
           ctx.setFillStyle('rgba(21,101,192,0.12)');
           ctx.fillRect(l, hit.topLineY - 14, r - l, hit.lineSpacing * 4 + 28);
