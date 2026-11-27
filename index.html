@@ -46,6 +46,11 @@
       <button id="btn-zoom-in" class="zb" data-icon="zoomIn" title="拡大" aria-label="拡大"></button>
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
+    <div id="backup-banner" class="backup-banner" role="status" hidden>
+      <span id="backup-banner-text"></span>
+      <button type="button" id="btn-banner-backup" class="pb primary">今すぐバックアップ</button>
+      <button type="button" id="btn-banner-later" class="pb">あとで</button>
+    </div>
   </main>
 
   <!-- 下：道具（手の届く位置）。左は入力方法、右はスクロールできるパレット -->
@@ -142,6 +147,13 @@
       </div>
       <h3>保存した楽譜</h3>
       <ul id="score-list" class="score-list"></ul>
+      <h3>バックアップ（楽譜が消えたときのために）</h3>
+      <p id="backup-status" class="backup-status"></p>
+      <div class="row">
+        <button type="button" id="btn-backup" class="pb primary">すべての楽譜をバックアップ</button>
+        <label class="pb file-label">バックアップから戻す<input type="file" id="file-restore" accept=".json,application/json" hidden /></label>
+      </div>
+      <p class="muted backup-note">楽譜はこのブラウザの中だけに保存されています。iPad では共有メニューの「"ファイル"に保存」で iCloud Drive などに置いておくと、ブラウザのデータが消えても戻せます。</p>
       <h3>読み込み</h3>
       <div class="row">
         <label class="pb file-label">楽譜ファイル（.json）を開く<input type="file" id="file-import" accept=".json,application/json" hidden /></label>

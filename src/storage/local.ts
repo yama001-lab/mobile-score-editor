@@ -27,12 +27,12 @@ export function listScores(): ScoreSummary[] {
   return readIndex().sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-export function saveScore(score: Score): void {
+export function saveScore(score: Score, opts: { makeLast?: boolean } = {}): void {
   localStorage.setItem(PREFIX + 'score:' + score.id, JSON.stringify(score));
   const list = readIndex().filter((s) => s.id !== score.id);
   list.push({ id: score.id, title: score.title, updatedAt: score.updatedAt });
   writeIndex(list);
-  localStorage.setItem(LAST_KEY, score.id);
+  if (opts.makeLast !== false) localStorage.setItem(LAST_KEY, score.id);
 }
 
 export function loadScore(id: string): Score | null {
