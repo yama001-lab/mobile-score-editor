@@ -9,7 +9,7 @@
    Editor（src/editor/editor.ts） ── 元に戻す用のスナップショット
         │ 変更通知
         ├──▶ render（VexFlowでSVG描画） ──▶ 画面 / PDF
-        └──▶ storage（localStorageに自動保存）
+        └──▶ storage（localStorageに自動保存。バックアップは src/storage/backup.ts）
 ```
 
 楽譜データ（`src/model/score.ts`）は JSON にそのまま書ける形で、`schemaVersion` を持ちます。
@@ -34,6 +34,15 @@
 - 再生の順番は `playOrder()`（リピートと番号付きカッコをたどる）。`buildSchedule()` はこの順に鳴らす
 - 途中の拍子変更は `Editor.setTimeSignatureAt()`。その小節から次の拍子変更の手前までを引き直す
 - 途中の調号変更 `Editor.setKeyAt()` は音の高さを変えない
+
+### 保存の安全策（`src/storage/backup.ts`）
+
+- 起動時に `navigator.storage.persist()` で「消さないで」と頼む（Safari はホーム画面から開くと日数でデータを消さない）
+- ファイル画面の「すべての楽譜をバックアップ」：全曲を1つの JSON（`format: "mobile-score-editor-backup"`）にまとめ、
+  タッチ端末では共有シート（「"ファイル"に保存」）、それ以外はダウンロード（`saveFileToDevice()`）
+- 「バックアップから戻す」：同じ id の楽譜は新しいほうを残す（`planRestore()`）。1曲だけの .json も読める
+- 最後のバックアップ時刻は `score-editor:backup-at`。そのあと書き換えがあり7日たったら上に声かけを出す（`shouldRemindBackup()`）
+- 保存に失敗したら（容量いっぱいなど）上のバーで知らせる。画面を離れるときは待っている自動保存をすぐ済ませる
 
 ## 画面の配置
 

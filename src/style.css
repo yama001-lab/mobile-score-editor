@@ -282,3 +282,17 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 #stage:has(.text-entry:not([hidden])) #score-wrap { padding-top: 70px; }
 .menu button:disabled { opacity: .4; cursor: default; }
 .dlg [hidden] { display: none !important; }
+
+/* 保存の安全策（src/storage/backup.ts） */
+.backup-status { margin: 4px 0 8px; padding: 8px 10px; border-radius: 8px; background: #f3f4f6; font-size: 14px; }
+.backup-status.warn { background: #fef3c7; }
+.backup-note { color: #6b7280; font-size: 13px; margin: 6px 0 0; }
+.backup-banner {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 6;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  max-width: min(560px, calc(100% - 24px)); padding: 10px 12px; border-radius: 12px;
+  background: #fef3c7; color: #111827; font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.18);
+}
+.backup-banner span { flex: 1 1 220px; }
+.backup-banner[hidden] { display: none; }
+.status.error { color: #dc2626; font-weight: 600; }

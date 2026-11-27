@@ -20,6 +20,10 @@ import { Stroke, boxOf, clusterStrokes, recognizeCluster } from './handwriting/r
 import { TextEntry } from './ui/text-entry';
 import { TextHit } from './render/texts';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
+import {
+  BackupState, LOCAL_LIMIT_BYTES, PersistState, backupAll, backupFileName, changedSinceBackup, isQuotaError,
+  isStandalone, localUsageBytes, parseBackup, requestPersist, restoreBackup, saveFileToDevice, shouldRemindBackup,
+} from './storage/backup';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -192,6 +196,16 @@ const texts = new TextEntry({
 // ---------- 保存 ----------
 
 let saveTimer = 0;
+let saveErrorShown = false;
+// 閉じる・別のアプリへ切り替える直前に、待っている保存をすぐ済ませる（iPad はタブがそのまま消えることがある）
+function flushSave() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = 0;
+  try { saveScore(editor.score); statusEl.textContent = '保存済み'; } catch { /* 下の通知に任せる */ }
+}
+window.addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 const statusEl = $('#save-status');
 editor.onChange((reason) => {
   requestRender();
@@ -199,11 +213,20 @@ editor.onChange((reason) => {
     statusEl.textContent = '保存中…';
     clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
+      saveTimer = 0;
       try {
         saveScore(editor.score);
         statusEl.textContent = '保存済み';
-      } catch {
+        statusEl.classList.remove('error');
+      } catch (err) {
         statusEl.textContent = '保存できませんでした';
+        statusEl.classList.add('error');
+        if (!saveErrorShown) {
+          saveErrorShown = true;
+          showBackupBanner(isQuotaError(err)
+            ? 'ブラウザの保存場所がいっぱいで保存できません。バックアップを取ってから、使わない楽譜を消してください。'
+            : 'この楽譜をブラウザに保存できませんでした。念のためバックアップを取ってください。');
+        }
       }
     }, 400);
   }
@@ -660,6 +683,7 @@ function openList() {
     li.append(name, del);
     ul.appendChild(li);
   }
+  updateBackupStatus();
   if (!dlgList.open) dlgList.showModal();
 }
 on('#btn-list', openList);
@@ -706,24 +730,15 @@ $<HTMLInputElement>('#file-import-score').addEventListener('change', async (e) =
 on('#btn-export-musicxml', async () => {
   const { toMusicXml } = await import('./export/musicxml');
   const blob = new Blob([toMusicXml(editor.score)], { type: 'application/vnd.recordare.musicxml+xml' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (editor.score.title || 'score').replace(/[\\/:*?"<>|]/g, '_') + '.musicxml';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  await saveFileToDevice(blob, safeFileName(editor.score.title) + '.musicxml');
 });
 on('#btn-export-json', () => {
   const blob = new Blob([JSON.stringify(editor.score, null, 1)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (editor.score.title || 'score') + '.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  void saveFileToDevice(blob, safeFileName(editor.score.title) + '.json');
 });
+function safeFileName(title: string) {
+  return (title || 'score').replace(/[\\/:*?"<>|]/g, '_');
+}
 $<HTMLInputElement>('#file-import').addEventListener('change', async (e) => {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -737,6 +752,99 @@ $<HTMLInputElement>('#file-import').addEventListener('change', async (e) => {
     dlgList.close();
   } catch (err) {
     alert('読み込めませんでした: ' + (err as Error).message);
+  }
+});
+
+// ---------- 保存の安全策（src/storage/backup.ts） ----------
+
+const BACKUP_AT_KEY = 'score-editor:backup-at';
+const REMINDED_AT_KEY = 'score-editor:backup-reminded-at';
+const FIRST_USE_KEY = 'score-editor:first-use-at';
+let persistState: PersistState = 'unsupported';
+
+function backupState(): BackupState {
+  let first = Number(safeGet(FIRST_USE_KEY)) || 0;
+  if (!first) { first = Date.now(); safeSet(FIRST_USE_KEY, String(first)); }
+  return {
+    backupAt: Number(safeGet(BACKUP_AT_KEY)) || 0,
+    remindedAt: Number(safeGet(REMINDED_AT_KEY)) || 0,
+    firstUseAt: first,
+  };
+}
+
+function updateBackupStatus() {
+  const el = $('#backup-status');
+  const st = backupState();
+  const list = listScores();
+  const changed = changedSinceBackup(list, st.backupAt);
+  const lines: string[] = [];
+  lines.push(st.backupAt
+    ? `最後のバックアップ：${new Date(st.backupAt).toLocaleString('ja-JP')}`
+      + (changed ? `（そのあと${changed}曲を書き換え）` : '（そのあとの変更なし）')
+    : 'まだバックアップしていません。');
+  if (persistState === 'persisted') lines.push('ブラウザに「消さないで」と頼んであります。');
+  else if (!isStandalone()) lines.push('Safari では、しばらく開かないとデータが消えることがあります。共有メニューの「ホーム画面に追加」から開くと消えにくくなります。');
+  const used = localUsageBytes();
+  const ratio = used / LOCAL_LIMIT_BYTES;
+  if (ratio > 0.1) lines.push(`保存場所の使用量：約${(used / 1024 / 1024).toFixed(1)}MB／5MB`);
+  el.textContent = lines.join('\n');
+  el.style.whiteSpace = 'pre-line';
+  el.classList.toggle('warn', !st.backupAt || changed > 0 || ratio > 0.8);
+}
+
+async function backupNow() {
+  try {
+    saveScore(editor.score);
+  } catch { /* 今の楽譜は下で直接まとめる */ }
+  const data = backupAll();
+  if (!data.scores.some((s) => s.id === editor.score.id)) data.scores.push(editor.score);
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const ok = await saveFileToDevice(blob, backupFileName());
+  if (!ok) return;
+  safeSet(BACKUP_AT_KEY, String(Date.now()));
+  hideBackupBanner();
+  updateBackupStatus();
+  toast(`${data.scores.length}曲をバックアップしました。保存したファイルは「バックアップから戻す」で開けます。`, 5000);
+}
+
+function showBackupBanner(text: string) {
+  $('#backup-banner-text').textContent = text;
+  $('#backup-banner').hidden = false;
+}
+function hideBackupBanner() { $('#backup-banner').hidden = true; }
+
+function maybeRemindBackup() {
+  const st = backupState();
+  const latest = listScores()[0]?.updatedAt ?? 0;
+  if (!shouldRemindBackup(st, latest)) return;
+  safeSet(REMINDED_AT_KEY, String(Date.now()));
+  const n = changedSinceBackup(listScores(), st.backupAt);
+  showBackupBanner(st.backupAt
+    ? `前のバックアップから1週間以上たち、${n}曲が書き換わっています。バックアップしておきましょう。`
+    : 'まだバックアップがありません。ブラウザのデータが消えても戻せるよう、ファイルに保存しておきましょう。');
+}
+
+on('#btn-backup', backupNow);
+on('#btn-banner-backup', backupNow);
+on('#btn-banner-later', () => { safeSet(REMINDED_AT_KEY, String(Date.now())); hideBackupBanner(); });
+$<HTMLInputElement>('#file-restore').addEventListener('change', async (e) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const scores = parseBackup(await file.text());
+    const r = restoreBackup(scores);
+    // 開いている楽譜がバックアップで新しくなったら開き直す
+    const cur = loadScore(editor.score.id);
+    if (cur && cur.updatedAt > editor.score.updatedAt) editor.load(cur);
+    openList();
+    const parts = [`${r.added}曲を追加`];
+    if (r.updated) parts.push(`${r.updated}曲を新しい版に更新`);
+    if (r.skipped) parts.push(`${r.skipped}曲はこちらの方が新しいのでそのまま`);
+    toast(`バックアップから戻しました：${parts.join('、')}`, 6000);
+  } catch (err) {
+    alert('戻せませんでした: ' + (isQuotaError(err) ? 'ブラウザの保存場所がいっぱいです' : (err as Error).message));
   }
 });
 
@@ -1176,8 +1284,15 @@ window.addEventListener('resize', () => {
 // 初めての人には鍵盤を出しておく
 setPanel(safeGet('score-editor:keyboard') !== '0');
 render();
-saveScore(editor.score);
-statusEl.textContent = '保存済み';
+try {
+  saveScore(editor.score);
+  statusEl.textContent = '保存済み';
+} catch {
+  statusEl.textContent = '保存できませんでした';
+}
+// 保存を消さないようブラウザに頼み、しばらくバックアップしていなければ声をかける
+requestPersist().then((st) => { persistState = st; });
+setTimeout(maybeRemindBackup, 4000);
 
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register('./sw.js').catch(() => { /* オフライン対応なしで続ける */ });
