@@ -14,6 +14,8 @@ import {
   Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
 } from '../model/score';
 import { TimedEvent, buildMeasures } from './timeline';
+import { EventTexts } from '../model/score';
+import { KIND_SUFFIX, MAX_VERSES } from '../model/texts';
 
 export interface ImportResult {
   score: Score;
@@ -44,6 +46,38 @@ interface StaffState {
   clef: Clef | null;
   /** 和音の続きを足すために、直前に置いた音 */
   last: TimedEvent | null;
+  /** 次の音符・休符に付けるコードネーム・文字 */
+  pending: EventTexts;
+}
+
+const ACC_TEXT = (a: number) => (a > 0 ? '#'.repeat(a) : a < 0 ? 'b'.repeat(-a) : '');
+
+/** <harmony> → "F#m7/C#" のような文字 */
+function readHarmony(el: Element): string {
+  const root = kid(el, 'root');
+  if (!root) return '';
+  const kindEl = kid(el, 'kind');
+  const kind = kindEl?.textContent?.trim() ?? 'major';
+  const suffix = kindEl?.getAttribute('text') ?? KIND_SUFFIX[kind] ?? '';
+  const bass = kid(el, 'bass');
+  return txt(root, 'root-step') + ACC_TEXT(Math.round(num(root, 'root-alter'))) + suffix
+    + (bass ? '/' + txt(bass, 'bass-step') + ACC_TEXT(Math.round(num(bass, 'bass-alter'))) : '');
+}
+
+/** <lyric> の並び → 番ごとの音節（つながる音節は末尾に '-'） */
+function readLyrics(note: Element): string[] | undefined {
+  const out: string[] = [];
+  kids(note, 'lyric').forEach((l, i) => {
+    const n = parseInt(l.getAttribute('number') ?? '', 10);
+    const v = Number.isFinite(n) && n >= 1 ? n - 1 : i;
+    if (v >= MAX_VERSES) return;
+    const text = kids(l, 'text').map((t) => t.textContent ?? '').join('').trim();
+    if (!text) return;
+    const syl = txt(l, 'syllabic');
+    while (out.length < v) out.push('');
+    out[v] = text + (syl === 'begin' || syl === 'middle' ? '-' : '');
+  });
+  return out.length ? out : undefined;
 }
 
 export function parseMusicXml(xml: string): ImportResult {
@@ -66,6 +100,7 @@ export function parseMusicXml(xml: string): ImportResult {
   let timeSignature: TimeSignature | null = null;
   let keyFifths: number | null = null;
   const tempos: { tick: number; tempo: number }[] = [];
+  const rehearsals: { tick: number; text: string }[] = [];
   let pickup = 0;
   const outParts: { name: string; staff: StaffState }[] = [];
 
@@ -74,7 +109,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null }));
+      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null, pending: {} }));
       return s;
     };
     let staffCount = 1;
@@ -117,7 +152,23 @@ export function parseMusicXml(xml: string): ImportResult {
           case 'forward':
             pos += (num(c, 'duration') * PPQ) / divisions;
             break;
-          case 'direction':
+          case 'harmony': {
+            const chord = readHarmony(c);
+            if (chord) staffOf(parseInt(txt(c, 'staff') || '1', 10) || 1).pending.chord = chord;
+            break;
+          }
+          // 下の case 'sound' へそのまま続けて、テンポも読む
+          case 'direction': {
+            const st = staffOf(parseInt(txt(c, 'staff') || '1', 10) || 1);
+            for (const dt of kids(c, 'direction-type')) {
+              for (const r of kids(dt, 'rehearsal')) {
+                const t = r.textContent?.trim();
+                if (t && outParts.length === 0) rehearsals.push({ tick: measureStart + pos, text: t });
+              }
+              const words = kids(dt, 'words').map((w) => w.textContent?.trim() ?? '').filter(Boolean).join(' ');
+              if (words) st.pending.text = st.pending.text ? `${st.pending.text} ${words}` : words;
+            }
+          }
           case 'sound': {
             const sounds = c.localName === 'sound' ? [c] : Array.from(c.getElementsByTagName('sound'));
             let tempo = sounds.map((s) => parseFloat(s.getAttribute('tempo') ?? '')).find((t) => t > 0);
@@ -145,11 +196,13 @@ export function parseMusicXml(xml: string): ImportResult {
               || Array.from(c.getElementsByTagName('tied')).some((t) => t.getAttribute('type') === 'start');
             if (kid(c, 'time-modification')) warn.add('連符は近い長さの音符に置き換えました');
 
+            const lyrics = readLyrics(c);
             if (isChord) {
               // 和音の2音目以降：直前の音に重ねる（時刻は進めない）
               if (pitchEl && st.voice === voice && st.last?.pitches) {
                 st.last.pitches.push(readPitch(pitchEl));
                 if (tie) st.last.tie = true;
+                if (lyrics && !st.last.texts?.lyrics) (st.last.texts ??= {}).lyrics = lyrics;
               }
               break;
             }
@@ -167,6 +220,10 @@ export function parseMusicXml(xml: string): ImportResult {
               tie: !!pitchEl && tie,
             };
             if (kid(c, 'unpitched')) ev.pitches = null;
+            const texts: EventTexts = { ...st.pending };
+            if (lyrics && ev.pitches) texts.lyrics = lyrics;
+            if (texts.chord || texts.text || texts.lyrics) ev.texts = texts;
+            st.pending = {};
             st.events.push(ev);
             st.last = ev;
             pos += dur;
@@ -239,6 +296,10 @@ export function parseMusicXml(xml: string): ImportResult {
   };
   if (tempoMarks.length) score.tempoMarks = tempoMarks;
   equalizeMeasureCounts(score);
+  for (const r of rehearsals) {
+    const m = score.parts[0].measures[Math.floor((r.tick + pickup) / cap)];
+    if (m && !m.rehearsal) m.rehearsal = r.text;
+  }
   return { score, warnings: [...warn] };
 }
 

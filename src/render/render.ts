@@ -7,6 +7,10 @@ import {
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
 import { Clef, MusicEvent, Score, measureCapacity, tempoMarkAt } from '../model/score';
+import {
+  MeasureStart, SystemTextEntry, TextFocus, TextHit, TextItem, addTextSpacers, drawSystemTexts, flushHyphens,
+  newTextState, partSpacing, rehearsalWidth,
+} from './texts';
 
 export interface RenderOptions {
   /** 描画に使う論理幅（px） */
@@ -20,6 +24,10 @@ export interface RenderOptions {
   drawTitle?: boolean;
   /** ページの高さ。指定すると、システムをページごとに分ける */
   pageHeight?: number;
+  /** 入力中の歌詞・コードネームなど（薄い青で示す） */
+  textFocus?: TextFocus | null;
+  /** 指定すると、歌詞などの文字は描かずにここへ渡す（PDFで日本語を画像にして載せるため） */
+  textSink?: (item: TextItem) => void;
 }
 
 export interface EventHit {
@@ -120,6 +128,7 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
       }
     }
     if (ev.dots && !(ev.kind === 'rest' && events.length === 1)) Dot.buildAndAttach([note], { all: true });
+    addTextSpacers(note, ev);
     if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     return note;
   });
@@ -184,8 +193,22 @@ export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[]
   return systems;
 }
 
+/** 段の中での各パートの五線のY（段の上端から）。歌詞・コードネームがあるパートは間を広げる */
+export function partOffsets(score: Score): number[] {
+  const sp = partSpacing(score);
+  const out: number[] = [];
+  let y = 0;
+  sp.forEach((s) => {
+    y += s.above;
+    out.push(y);
+    y += PART_SPACING + s.below;
+  });
+  return out;
+}
+
 export function systemHeight(score: Score) {
-  return score.parts.length * PART_SPACING + SYSTEM_GAP;
+  const sp = partSpacing(score);
+  return sp.reduce((h, s) => h + PART_SPACING + s.above + s.below, 0) + SYSTEM_GAP;
 }
 
 export interface Page {
@@ -224,6 +247,8 @@ export interface TempoHit {
 export interface RenderResult {
   hits: MeasureHit[];
   tempoHits: TempoHit[];
+  /** 歌詞・コードネーム・文字・練習番号の位置（タップで直すため） */
+  textHits: TextHit[];
   height: number;
 }
 
@@ -267,6 +292,10 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   ctx.scale(scale, scale);
   const hits: MeasureHit[] = [];
   const tempoHits: TempoHit[] = [];
+  const textHits: TextHit[] = [];
+  const spacing = partSpacing(score);
+  const offsets = partOffsets(score);
+  const textState = newTextState();
 
   if (page.first && opts.drawTitle !== false) {
     ctx.save();
@@ -288,10 +317,12 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
     let x = MARGIN_X;
+    const textEntries: SystemTextEntry[] = [];
+    const measureStarts: MeasureStart[] = [];
     sys.measures.forEach((mi, k) => {
       const w = sys.widths[k];
       const staves = score.parts.map((part, pi) => {
-        const st = new Stave(x, sysY + pi * PART_SPACING, w);
+        const st = new Stave(x, sysY + offsets[pi], w);
         if (k === 0) st.addClef(part.clef).addKeySignature(keyName(score.keyFifths));
         if (mi === 0) st.addTimeSignature(`${score.timeSignature.beats}/${score.timeSignature.beatType}`);
         if (mi === score.parts[0].measures.length - 1) st.setEndBarType(3 /* END */);
@@ -302,8 +333,11 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       staves.forEach((s) => s.setNoteStartX(noteStart));
       staves.forEach((s) => s.setContext(ctx).draw());
       const mark = mi > 0 ? tempoMarkAt(score, mi) : null;
+      measureStarts.push({ measureIndex: mi, x: k === 0 ? noteStart - 4 : x + 6, topLineY: staves[0].getYForLine(0) });
       if (mark !== null) {
-        const tx = k === 0 ? noteStart - 4 : x + 6;
+        let tx = k === 0 ? noteStart - 4 : x + 6;
+        const rh = score.parts[0].measures[mi].rehearsal;
+        if (rh) tx += rehearsalWidth(rh) + 6;
         tempoHits.push({ ...drawTempo(ctx, tx, staves[0].getYForLine(0) - 22, mark), measure: mi });
       }
 
@@ -343,6 +377,10 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
 
         b.events.forEach((ev, i) => {
           allNotes.set(ev.id, { note: b.notes[i], system: si });
+          textEntries.push({
+            partIndex: pi, measureIndex: mi, ev, note: b.notes[i],
+            topLineY: hit.topLineY, bottomLineY: hit.topLineY + hit.lineSpacing * 4,
+          });
           if (ev.kind === 'note' && ev.tie) {
             const next = nextEvent(score, pi, mi, i);
             if (next && next.kind === 'note') ties.push({ from: ev.id, to: next.id });
@@ -374,7 +412,11 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       }
       x += w;
     });
+    textHits.push(...drawSystemTexts(ctx, score, textEntries, measureStarts, si, textState, {
+      sink: opts.textSink, focus: opts.textFocus, spacing,
+    }));
   });
+  flushHyphens(ctx, textState, opts.textSink);
 
   for (const t of ties) {
     const a = allNotes.get(t.from);
@@ -398,7 +440,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
     }
   }
 
-  return { hits, tempoHits, height };
+  return { hits, tempoHits, textHits, height };
 }
 
 function nextEvent(score: Score, pi: number, mi: number, ei: number): MusicEvent | undefined {

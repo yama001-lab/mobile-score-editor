@@ -7,10 +7,11 @@ import {
   Pitch, comparePitch, diatonicIndex, fromDiatonic, fromMidi, keyAlter, samePitch, STEPS, Step,
 } from '../model/pitch';
 import {
-  Clef, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
+  Clef, copyTexts, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
   eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
   TimeSignature,
 } from '../model/score';
+import { lyricOf, setLyricOn } from '../model/texts';
 
 /** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
 export type Mode = 'select' | 'input' | 'pen';
@@ -219,7 +220,9 @@ export class Editor {
         const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
         const ev = m.events[loc.eventIndex];
         if (ev.kind === 'rest') continue;
-        m.events[loc.eventIndex] = makeRest(ev.duration, ev.dots);
+        const rest = makeRest(ev.duration, ev.dots);
+        copyTexts(ev, rest, false);
+        m.events[loc.eventIndex] = rest;
         const prev = loc.eventIndex > 0 ? m.events[loc.eventIndex - 1] : undefined;
         if (prev?.kind === 'note') delete prev.tie;
         touched.add(m);
@@ -370,6 +373,7 @@ export class Editor {
         return;
       }
       const rest = makeRest(ev.duration, ev.dots);
+      copyTexts(ev, rest, false);
       m.events[loc.eventIndex] = rest;
       this.selectedId = rest.id;
       if (loc.eventIndex > 0) {
@@ -505,6 +509,37 @@ export class Editor {
   private chordTargets(note: NoteEvent): number[] {
     if (note.pitches.length === 1) return [0];
     return [Math.min(this.selectedPitchIndex, note.pitches.length - 1)];
+  }
+
+  // ---------- 歌詞・コードネーム・文字（src/model/texts.ts） ----------
+
+  /** 歌詞を設定する（空なら消す）。入力中の1音節は coalesce で1回の「元に戻す」にまとめる */
+  setLyric(id: string, verse: number, text: string, coalesce?: string) {
+    const loc = findEvent(this.score, id);
+    const ev = loc && eventAt(this.score, loc);
+    if (!ev || ev.kind !== 'note' || lyricOf(ev, verse) === text) return;
+    this.mutate(() => setLyricOn(ev, verse, text), coalesce);
+  }
+
+  /** コードネーム（field='chord'）か譜表の上の文字（field='text'）を設定する。空なら消す */
+  setEventText(id: string, field: 'chord' | 'text', text: string, coalesce?: string) {
+    const loc = findEvent(this.score, id);
+    const ev = loc && eventAt(this.score, loc);
+    if (!ev || (ev[field] ?? '') === text) return;
+    this.mutate(() => {
+      if (text) ev[field] = text;
+      else delete ev[field];
+    }, coalesce);
+  }
+
+  /** 練習番号（小節の頭、いちばん上のパートに付ける）。空なら消す */
+  setRehearsal(measureIndex: number, text: string, coalesce?: string) {
+    const m = this.score.parts[0].measures[measureIndex];
+    if (!m || (m.rehearsal ?? '') === text) return;
+    this.mutate(() => {
+      if (text) m.rehearsal = text;
+      else delete m.rehearsal;
+    }, coalesce);
   }
 
   // ---------- 小節・楽譜全体 ----------

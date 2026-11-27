@@ -18,7 +18,19 @@ export interface TimeSignature {
 export type Clef = 'treble' | 'bass' | 'alto';
 export type Instrument = 'piano' | 'synth';
 
-export interface NoteEvent {
+/**
+ * 音符・休符に付ける文字（歌詞・コードネーム・譜表の上の文字）。どれも省略できる。
+ * 歌詞は番ごと（lyrics[0] が1番）。末尾が '-' の音節は次の音節とハイフンでつなぐ。
+ */
+export interface EventTexts {
+  lyrics?: string[];
+  /** コードネーム（例: "C", "Am7", "F#m7-5", "G/B"） */
+  chord?: string;
+  /** 譜表の上に書く文字（例: "rit.", "やさしく"） */
+  text?: string;
+}
+
+export interface NoteEvent extends EventTexts {
   id: string;
   kind: 'note';
   duration: DurationType;
@@ -29,7 +41,7 @@ export interface NoteEvent {
   tie?: boolean;
 }
 
-export interface RestEvent {
+export interface RestEvent extends EventTexts {
   id: string;
   kind: 'rest';
   duration: DurationType;
@@ -41,6 +53,8 @@ export type MusicEvent = NoteEvent | RestEvent;
 export interface Measure {
   id: string;
   events: MusicEvent[];
+  /** 練習番号（A、B…）。いちばん上のパートの小節にだけ付ける */
+  rehearsal?: string;
 }
 
 export interface Part {
@@ -180,14 +194,37 @@ export function overwriteAt(m: Measure, index: number, ev: MusicEvent): void {
 /** 休符だけの小節は1つの休符にまとめる。 */
 export function normalizeMeasure(m: Measure, capacity: number): void {
   if (m.events.every((e) => e.kind === 'rest')) {
+    // 2つ目以降の休符にコードネームなどが付いているときは、まとめると消えてしまうのでそのまま
+    if (m.events.slice(1).some(hasTexts)) return;
+    const first = m.events[0];
     const total = Math.max(measureTicks(m), capacity);
     m.events = restsFor(total);
+    if (first && m.events[0]) copyTexts(first, m.events[0], false);
   }
+}
+
+/** 歌詞・コードネーム・文字のどれかが付いているか */
+export function hasTexts(e: EventTexts): boolean {
+  return !!(e.lyrics?.some((l) => l) || e.chord || e.text);
+}
+
+/** from の文字を to へ写す。休符には歌詞を付けない */
+export function copyTexts(from: EventTexts, to: MusicEvent, lyrics = true): void {
+  if (lyrics && to.kind === 'note' && from.lyrics?.some((l) => l)) to.lyrics = [...from.lyrics];
+  if (from.chord) to.chord = from.chord;
+  if (from.text) to.text = from.text;
 }
 
 /** 拍子が変わったとき、パートの音を新しい小節の長さに流し直す。小節をまたぐ音はタイで分ける。 */
 export function reflowPart(part: Part, capacity: number): void {
   const all = part.measures.flatMap((m) => m.events);
+  // 練習番号は、元の小節の頭の時刻で新しい小節に付け直す
+  const rehearsals: { tick: number; text: string }[] = [];
+  let at = 0;
+  for (const m of part.measures) {
+    if (m.rehearsal) rehearsals.push({ tick: at, text: m.rehearsal });
+    at += measureTicks(m);
+  }
   const measures: Measure[] = [];
   let cur: Measure = { id: uid(), events: [] };
   let used = 0;
@@ -210,11 +247,11 @@ export function reflowPart(part: Part, capacity: number): void {
       for (let k = 0; k < pieces.length; k++) {
         const pc = pieces[k];
         const isLast = remaining - take === 0 && k === pieces.length - 1;
-        if (ev.kind === 'note') {
-          push(makeNote(ev.pitches, pc.duration, pc.dots, isLast ? !!ev.tie : true));
-        } else {
-          push(makeRest(pc.duration, pc.dots));
-        }
+        const piece = ev.kind === 'note'
+          ? makeNote(ev.pitches, pc.duration, pc.dots, isLast ? !!ev.tie : true)
+          : makeRest(pc.duration, pc.dots);
+        if (first && k === 0) copyTexts(ev, piece);
+        push(piece);
       }
       remaining -= take;
       first = false;
@@ -226,6 +263,10 @@ export function reflowPart(part: Part, capacity: number): void {
   }
   if (!measures.length) measures.push(createMeasure(capacity));
   measures.forEach((m) => normalizeMeasure(m, capacity));
+  for (const r of rehearsals) {
+    const m = measures[Math.min(measures.length - 1, Math.floor(r.tick / capacity))];
+    m.rehearsal ??= r.text;
+  }
   part.measures = measures;
 }
 

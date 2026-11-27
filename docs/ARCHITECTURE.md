@@ -60,3 +60,15 @@
   1段1声部、2段のパートは段ごとに別パート、拍子は最初のものだけ、連符は32分音符の格子に丸める。弱起は1小節目の後ろに寄せる
 - 逆向き（Score → MusicXML）は `src/export/musicxml.ts`。MuseScore などへ持っていける
 - ブラウザ内だけでの OMR（画像から直接読む）は未実装。やるなら `importBytes()` の `needs-omr` の所に差し込む
+
+### 歌詞・コードネーム・文字・練習番号
+- データ：音符・休符の `EventTexts`（`lyrics`（番ごと、末尾 `-` で次の音節とハイフン）・`chord`・`text`）と、
+  いちばん上のパートの小節の `rehearsal`。どれも省略できるので `schemaVersion` は変えていない
+- 共通処理は `src/model/texts.ts`（次の音符の探し方、コードネームの読み取りと ♯♭ 表示、練習番号の続き）
+- 入力は `src/ui/text-entry.ts`。パレットに「歌詞・コード・文字・練習番号」を足し、楽譜の上端に入力欄を出す。
+  歌詞はスペース／Enter で次の音符（休符とタイの続きはとばす）、`-` でハイフン。日本語の変換中のスペース・Enter は変換に使う。
+  楽譜の文字をタップすると直せる（`main.ts` の pointerdown／up から `texts.pointerDown/Up` を呼ぶ）
+- 描画は `src/render/texts.ts`。文字の幅のぶん見えない Annotation を音符に付けて間隔を空け、段ごとに高さをそろえて描く。
+  歌詞・文字のあるパートは譜表の間を広げる（`partOffsets()`）
+- PDF は日本語の標準フォントがないため、`renderPage()` の `textSink` で文字を集めて、1つずつ画像にして載せる
+- MusicXML は `<lyric>`・`<harmony>`・`<words>`・`<rehearsal>` で読み書きする

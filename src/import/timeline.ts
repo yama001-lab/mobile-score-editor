@@ -4,7 +4,7 @@
  */
 import { decompose } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 export interface TimedEvent {
   /** 曲の頭からのティック */
@@ -14,6 +14,8 @@ export interface TimedEvent {
   pitches: Pitch[] | null;
   /** 次の音へタイでつなぐ */
   tie: boolean;
+  /** 歌詞・コードネーム・文字（分けたときは最初の音符に付ける） */
+  texts?: EventTexts;
 }
 
 /** 32分音符より細かい長さ（連符など）は近い32分音符の位置にそろえる */
@@ -44,7 +46,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
   const buckets: MusicEvent[][] = [];
   let cursor = 0;
 
-  const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean) => {
+  const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean, texts?: EventTexts) => {
     while (len > 0) {
       const mi = Math.floor(cursor / capacity);
       const room = (mi + 1) * capacity - cursor;
@@ -53,9 +55,11 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
       (buckets[mi] ??= []);
       pieces.forEach((pc, k) => {
         const lastOfAll = take === len && k === pieces.length - 1;
-        buckets[mi].push(pitches
+        const ev = pitches
           ? makeNote(pitches, pc.duration, pc.dots, lastOfAll ? tieAtEnd : true)
-          : makeRest(pc.duration, pc.dots));
+          : makeRest(pc.duration, pc.dots);
+        if (texts) { copyTexts(texts, ev); texts = undefined; }
+        buckets[mi].push(ev);
       });
       cursor += take;
       len -= take;
@@ -73,7 +77,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
       start = cursor;
     }
     if (start > cursor) emit(start - cursor, null, false);
-    emit(ticks, e.pitches, e.pitches ? e.tie : false);
+    emit(ticks, e.pitches, e.pitches ? e.tie : false, e.texts);
   }
 
   const count = Math.max(minMeasures, Math.ceil(cursor / capacity), 1);
