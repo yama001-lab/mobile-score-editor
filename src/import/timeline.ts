@@ -4,7 +4,7 @@
  */
 import { DurationType, decompose, ticksOf } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { EventMarks, Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { EventMarks, EventTexts, Measure, MusicEvent, copyTexts, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 /** 連符の一員であること（同じ key の続いた音が1つの連符） */
 export interface TimedTuplet {
@@ -24,6 +24,8 @@ export interface TimedEvent {
   pitches: Pitch[] | null;
   /** 次の音へタイでつなぐ */
   tie: boolean;
+  /** 歌詞・コードネーム・文字（分けたときは最初の音符に付ける） */
+  texts?: EventTexts;
   /** 付いている記号（分けたときは最初のかけらに付ける） */
   marks?: EventMarks;
   /** 置いた結果：最初と最後のかけらの id（スラーなどをつなぐのに使う）。buildMeasures が書き込む */
@@ -109,6 +111,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
             src.placed = { first: ev.id, last: ev.id };
             if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
             if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
+            if (src.texts) copyTexts(src.texts, ev);
           }
           src.placed.last = ev.id;
         }
@@ -137,6 +140,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
         src.placed = { first: ev.id, last: ev.id };
         if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
         if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
+        if (src.texts) copyTexts(src.texts, ev);
         (buckets[Math.floor(cursor / capacity)] ??= []).push(ev);
         cursor += e.ticks;
       }

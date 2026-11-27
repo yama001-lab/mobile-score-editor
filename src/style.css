@@ -242,4 +242,34 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .pen-layer.finger-draws { touch-action: none; }
 .score.pen-mode { box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 4px rgba(0,0,0,.12); }
 .pen-guide { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }
+
+/* 歌詞・コードネーム・文字の入力欄（iPad のキーボードに隠れないよう、楽譜の上の端に出す） */
+.tool.txt b { font-size: 15px; line-height: 24px; font-weight: 700; font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; }
+.text-entry {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  width: min(720px, calc(100% - 24px));
+  background: #fff; border: 1px solid var(--accent); border-radius: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.18);
+}
+.text-entry[hidden], .text-entry [hidden] { display: none !important; }
+.text-entry .te-kind { font-size: 13px; font-weight: 700; color: var(--accent); white-space: nowrap; padding: 0 2px; }
+.text-entry .te-verse { height: 36px; border: 1px solid var(--btn-border); border-radius: 8px; background: #fff; padding: 0 4px; }
+.text-entry .te-input {
+  flex: 1; min-width: 0; height: 38px; padding: 0 10px; font-size: 17px;
+  border: 1px solid var(--btn-border); border-radius: 8px; -webkit-user-select: text; user-select: text;
+}
+.text-entry .te-input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.text-entry .te-b {
+  height: 38px; padding: 0 10px; border: 1px solid var(--btn-border); border-radius: 8px; background: #fff;
+  white-space: nowrap; font-size: 14px; cursor: pointer;
+}
+.text-entry .te-b.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.text-entry .te-b.danger { color: var(--danger); }
+@media (max-width: 600px) {
+  .text-entry { flex-wrap: wrap; }
+  .text-entry .te-input { flex-basis: 100%; order: -1; }
+  .text-entry .te-kind { display: none; }
+}
+/* 入力欄が開いているときは、楽譜の上端が入力欄に隠れないように空ける */
+#stage:has(.text-entry:not([hidden])) #score-wrap { padding-top: 70px; }
 .menu button:disabled { opacity: .4; cursor: default; }

@@ -13,6 +13,8 @@ import { PenLayer } from './handwriting/pen';
 import { setupMarksPalette } from './ui/marks-palette';
 import { applyRecognized, staffOf } from './handwriting/apply';
 import { Stroke, boxOf, clusterStrokes, recognizeCluster } from './handwriting/recognize';
+import { TextEntry } from './ui/text-entry';
+import { TextHit } from './render/texts';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -29,6 +31,7 @@ const scoreEl = $('#score');
 const wrap = $('#score-wrap');
 let hits: MeasureHit[] = [];
 let tempoHits: TempoHit[] = [];
+let textHits: TextHit[] = [];
 let zoom = Number(safeGet('score-editor:zoom')) || 1;
 
 // 手書きモードで楽譜の上に重ねる層（ステップ3）
@@ -68,10 +71,12 @@ function render() {
     selectedId: editor.selectedId,
     rangeIds: editor.rangeIds,
     selectedPitchIndex: editor.selectedPitchIndex,
-    cursor: editor.mode !== 'select' ? editor.cursor : null,
+    cursor: editor.mode !== 'select' && !texts.isOpen ? editor.cursor : null,
+    textFocus: texts.focus,
   });
   hits = res.hits;
   tempoHits = res.tempoHits;
+  textHits = res.textHits;
   scoreEl.appendChild(playheadLayer);
   penLayer.attach();
   focusInputPosition();
@@ -164,6 +169,18 @@ function toast(text: string, ms = 3500) {
   toastTimer = window.setTimeout(() => (t.hidden = true), ms);
 }
 
+// ---------- 歌詞・コードネーム・文字（src/ui/text-entry.ts） ----------
+
+const texts = new TextEntry({
+  editor,
+  rerender: requestRender,
+  toast: (t) => toast(t),
+  pick: (x, y) => {
+    const h = hitAt(x, y);
+    return h ? h.events[eventIndexAt(h, x)]?.id ?? null : null;
+  },
+});
+
 // ---------- 保存 ----------
 
 let saveTimer = 0;
@@ -222,6 +239,7 @@ const LONG_PRESS_MS = 450;
 scoreEl.addEventListener('pointerdown', (ev) => {
   if (ev.button > 0 || editor.mode === 'pen') return;
   const { x, y } = localPoint(ev);
+  if (texts.pointerDown(ev, x, y, textHits)) return;
   const th = tempoHits.find((t) => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h);
   if (th) { tempoTap = { pointerId: ev.pointerId, measure: th.measure }; return; }
   const h = hitAt(x, y);
@@ -283,6 +301,7 @@ let rangeTouch = false;
 let tempoTap: { pointerId: number; measure: number } | null = null;
 
 function endPointer(ev: PointerEvent, cancelled: boolean) {
+  if (texts.pointerUp(ev, cancelled)) return;
   if (tempoTap && tempoTap.pointerId === ev.pointerId) {
     const m = tempoTap.measure;
     tempoTap = null;

@@ -2,6 +2,7 @@
 import { Score } from '../model/score';
 import { layoutSystems, paginate, renderPage } from '../render/render';
 import { encodeScore } from '../import/embed';
+import { TextItem, cssFont } from '../render/texts';
 
 const PAGE_W = 794; // A4 を 96dpi で表した幅
 const PAGE_H = 1123;
@@ -29,6 +30,27 @@ function titleImage(score: Score): string {
   return canvas.toDataURL('image/png');
 }
 
+/** 文字1つを、透明な背景の画像にする（座標は楽譜の論理px） */
+function textImage(t: TextItem): { url: string; x: number; y: number; w: number; h: number } | null {
+  const scale = 4;
+  const canvas = document.createElement('canvas');
+  const g = canvas.getContext('2d');
+  if (!g) return null;
+  g.font = cssFont(t.font);
+  const pad = 2;
+  const w = Math.ceil(g.measureText(t.text).width) + pad * 2;
+  const ascent = t.font.size * 1.05;
+  const h = Math.ceil(t.font.size * 1.4) + pad * 2;
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  g.scale(scale, scale);
+  g.font = cssFont(t.font);
+  g.fillStyle = '#000';
+  g.textBaseline = 'alphabetic';
+  g.fillText(t.text, pad, pad + ascent);
+  return { url: canvas.toDataURL('image/png'), x: t.x - pad, y: t.y - ascent - pad, w, h };
+}
+
 export async function exportPdf(score: Score): Promise<void> {
   const [{ jsPDF }] = await Promise.all([import('jspdf'), import('svg2pdf.js')]);
   const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait', compress: true });
@@ -42,10 +64,18 @@ export async function exportPdf(score: Score): Promise<void> {
       if (i > 0) doc.addPage();
       const div = document.createElement('div');
       holder.appendChild(div);
-      renderPage(div, score, pages[i], opts, i, TOP);
+      // 歌詞などの文字は日本語を含むので、SVG には描かずに集めて画像で載せる
+      const texts: TextItem[] = [];
+      renderPage(div, score, pages[i], { ...opts, textSink: (t) => texts.push(t) }, i, TOP);
       const svg = div.querySelector('svg')!;
       ptFontSizesToPx(svg);
       await doc.svg(svg, { x: 0, y: 0, width: PT_W, height: PT_H });
+      for (const t of texts) {
+        const img = textImage(t);
+        if (!img) continue;
+        const k = PT_W / PAGE_W;
+        doc.addImage(img.url, 'PNG', img.x * k, img.y * k, img.w * k, img.h * k, undefined, 'FAST');
+      }
       if (i === 0) doc.addImage(titleImage(score), 'PNG', 0, 0, PT_W, (110 * PT_W) / PAGE_W, undefined, 'FAST');
       div.remove();
     }
