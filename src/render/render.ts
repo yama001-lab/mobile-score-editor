@@ -41,6 +41,8 @@ export interface RenderOptions {
   textFocus?: TextFocus | null;
   /** 指定すると、歌詞などの文字は描かずにここへ渡す（PDFで日本語を画像にして載せるため） */
   textSink?: (item: TextItem) => void;
+  /** 改行・改ページの目印を描く（画面だけ。PDFには出さない） */
+  showBreaks?: boolean;
 }
 
 export interface EventHit {
@@ -77,6 +79,8 @@ export interface MeasureHit {
 export interface SystemLayout {
   measures: number[];
   widths: number[];
+  /** この段のあとで改ページする */
+  pageBreak?: boolean;
 }
 
 const MARGIN_X = 24;
@@ -313,38 +317,69 @@ function midModifiersWidth(score: Score, mi: number): number {
   return modifiersWidth(score, mi, false);
 }
 
+/**
+ * 小節を段に分ける（幅は計算しない）。改行・改ページの指定と「1段の小節数」に従い、
+ * それ以外は fits(段の小節, 次の小節) が false になったところで改行する。
+ * 戻り値は段ごとの小節番号と、その段のあとで改ページするか。
+ */
+export function breakSystems(
+  score: Score, fits: (measures: number[], next: number) => boolean,
+): { measures: number[]; pageBreak: boolean }[] {
+  const n = score.parts[0].measures.length;
+  const per = score.layout?.measuresPerSystem;
+  const out: { measures: number[]; pageBreak: boolean }[] = [];
+  let cur: number[] = [];
+  for (let i = 0; i < n; i++) {
+    // 小節数の指定がなければ、入りきらないところで自動改行
+    if (cur.length && !per && !fits(cur, i)) { out.push({ measures: cur, pageBreak: false }); cur = []; }
+    cur.push(i);
+    const a = measureAttrsAt(score, i);
+    if (a?.systemBreak || a?.pageBreak || cur.length === per || i === n - 1) {
+      out.push({ measures: cur, pageBreak: !!a?.pageBreak && i < n - 1 });
+      cur = [];
+    }
+  }
+  return out;
+}
+
 export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[] {
   const available = opts.width - MARGIN_X * 2;
   const n = score.parts[0].measures.length;
   const content = Array.from({ length: n }, (_, i) => measureContentWidth(score, i, opts));
-  const systems: SystemLayout[] = [];
-  let cur: SystemLayout = { measures: [], widths: [] };
-  let used = 0;
-  for (let i = 0; i < n; i++) {
-    const head = cur.measures.length === 0 ? startModifiersWidth(score, i) : midModifiersWidth(score, i);
-    const w = content[i] + head;
-    if (cur.measures.length && used + w > available) {
-      systems.push(cur);
-      cur = { measures: [], widths: [] };
-      used = 0;
-      i--;
-      continue;
-    }
-    cur.measures.push(i);
-    cur.widths.push(w);
-    used += w;
-  }
-  if (cur.measures.length) systems.push(cur);
-  // 横幅いっぱいに広げる（最後の段は、半分以上埋まっているときだけ）
+  const widthOf = (mi: number, first: boolean) => content[mi] + (first ? startModifiersWidth(score, mi) : midModifiersWidth(score, mi));
+  const groups = breakSystems(score, (ms, next) =>
+    ms.reduce((sum, mi, k) => sum + widthOf(mi, k === 0), 0) + widthOf(next, false) <= available);
+  const systems: SystemLayout[] = groups.map((g) => ({
+    measures: g.measures,
+    widths: g.measures.map((mi, k) => widthOf(mi, k === 0)),
+    ...(g.pageBreak ? { pageBreak: true } : {}),
+  }));
+  const per = score.layout?.measuresPerSystem;
   systems.forEach((s, si) => {
     const total = s.widths.reduce((a, b) => a + b, 0);
-    const last = si === systems.length - 1;
-    if (last && total < available * 0.6) return;
     const head = startModifiersWidth(score, s.measures[0]);
-    const extra = (available - total) / s.widths.length;
+    // 指定どおりに並べると入りきらない段は、必要な幅の比で縮める
+    if (total > available) {
+      const k = available / total;
+      s.widths = s.widths.map((w, i) => (i === 0 ? Math.max(head + 30, w * k) : w * k));
+      const sum = s.widths.reduce((a, b) => a + b, 0);
+      if (sum > available) {
+        const rest = s.widths.slice(1).reduce((a, b) => a + b, 0);
+        const r = rest > 0 ? (available - s.widths[0]) / rest : 1;
+        s.widths = s.widths.map((w, i) => (i === 0 ? w : w * r));
+      }
+      return;
+    }
+    // 横幅いっぱいに広げる（改行で短くなった段も）。最後の段は、半分以上埋まっているときだけ。
+    // 1段の小節数を指定しているときは、最後の段も小節数の割合だけ広げて、上の段と小節の幅をそろえる
+    const last = si === systems.length - 1;
+    let target = available;
+    if (per && last) target = Math.max(total, available * Math.min(1, s.measures.length / per));
+    else if (last && total < available * 0.6) return;
+    const extra = (target - total) / s.widths.length;
     s.widths = s.widths.map((w, k) => (k === 0 ? Math.max(head + 40, w + extra) : w + extra));
     const sum = s.widths.reduce((a, b) => a + b, 0);
-    s.widths[s.widths.length - 1] += available - sum;
+    s.widths[s.widths.length - 1] += target - sum;
   });
   return systems;
 }
@@ -386,8 +421,13 @@ export function paginate(score: Score, systems: SystemLayout[], pageHeight: numb
     }
     cur.systems.push(s);
     y += h;
+    if (s.pageBreak) {
+      pages.push(cur);
+      cur = { systems: [], first: false };
+      y = topMargin;
+    }
   }
-  pages.push(cur);
+  if (cur.systems.length || !pages.length) pages.push(cur);
   return pages;
 }
 
@@ -631,6 +671,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       }
       x += w;
     });
+    if (opts.showBreaks) drawBreakMark(ctx, score, sys, x, boxes[si]?.tops[0] ?? sysY + offsets[0], sysY + sysH - SYSTEM_GAP / 2, opts.width);
     textHits.push(...drawSystemTexts(ctx, score, textEntries, measureStarts, si, textState, {
       sink: opts.textSink, focus: opts.textFocus, spacing,
     }));
@@ -665,6 +706,35 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
     : undefined);
 
   return { hits, tempoHits, textHits, height };
+}
+
+const COLOR_BREAK = '#1565c0';
+
+/** 段の右端に、改行（↵）・改ページ（破線＋紙）の目印を描く。指定した小節のあとだけ */
+function drawBreakMark(ctx: Ctx, score: Score, sys: SystemLayout, endX: number, topY: number, bottomY: number, width: number) {
+  const a = measureAttrsAt(score, sys.measures[sys.measures.length - 1]);
+  if (!a?.systemBreak && !a?.pageBreak) return;
+  const x = endX + 5;
+  const y = topY - 4;
+  ctx.save();
+  ctx.setStrokeStyle(COLOR_BREAK);
+  ctx.setFillStyle(COLOR_BREAK);
+  ctx.setLineWidth(1.4);
+  ctx.beginPath();
+  if (a.pageBreak) {
+    // 紙の形
+    ctx.moveTo(x, y); ctx.lineTo(x + 7, y); ctx.lineTo(x + 11, y + 4); ctx.lineTo(x + 11, y + 14);
+    ctx.lineTo(x, y + 14); ctx.closePath(); ctx.stroke();
+    // 段の下に破線
+    for (let dx = MARGIN_X; dx < width - MARGIN_X; dx += 10) {
+      ctx.beginPath(); ctx.moveTo(dx, bottomY); ctx.lineTo(Math.min(dx + 5, width - MARGIN_X), bottomY); ctx.stroke();
+    }
+  } else {
+    // ↵
+    ctx.moveTo(x + 10, y); ctx.lineTo(x + 10, y + 8); ctx.lineTo(x + 2, y + 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y + 8); ctx.lineTo(x + 4, y + 5); ctx.lineTo(x + 4, y + 11); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
 }
 
 /** 番号付きカッコの描き方。続きの小節は、番号を付けずに線だけ続ける */

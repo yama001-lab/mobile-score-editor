@@ -84,6 +84,7 @@ function render() {
     selectedPitchIndex: editor.selectedPitchIndex,
     cursor: editor.mode !== 'select' && !texts.isOpen ? editor.cursor : null,
     textFocus: texts.focus,
+    showBreaks: true,
   });
   hits = res.hits;
   tempoHits = res.tempoHits;
@@ -590,6 +591,12 @@ on('#btn-remove-tuplet', () => editor.removeTuplet());
 on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1));
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
+on('#btn-toggle-break', () => {
+  const mi = (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex;
+  editor.toggleSystemBreak(mi);
+  const a = measureAttrsAt(editor.score, mi);
+  toast(a?.systemBreak ? `${mi + (editor.score.pickup ? 0 : 1)}小節目のあとで改行します` : '改行を外しました');
+});
 on('#btn-measure-marks', () => openMeasureMarks(
   (editor.mode === 'select' ? editor.selectedLocation?.measureIndex : undefined) ?? editor.cursor.measureIndex));
 
@@ -856,6 +863,8 @@ $<HTMLInputElement>('#file-restore').addEventListener('change', async (e) => {
 const dlgSet = $<HTMLDialogElement>('#dlg-settings');
 const beatsSel = $<HTMLSelectElement>('#set-beats');
 [2, 3, 4, 5, 6, 7, 9, 12].forEach((n) => beatsSel.add(new Option(String(n), String(n))));
+const perSystemSel = $<HTMLSelectElement>('#set-per-system');
+for (let n = 1; n <= 8; n++) perSystemSel.add(new Option(`${n}小節`, String(n)));
 const keySel = $<HTMLSelectElement>('#set-key');
 for (let f = -7; f <= 7; f++) {
   const label = f === 0 ? '調号なし（ハ長調／イ短調）' : `${Math.abs(f)}${f > 0 ? '♯' : '♭'}（${keyLabelJa(f)}）`;
@@ -901,6 +910,7 @@ function openSettings() {
   beatsSel.value = String(s.timeSignature.beats);
   $<HTMLSelectElement>('#set-beattype').value = String(s.timeSignature.beatType);
   keySel.value = String(s.keyFifths);
+  perSystemSel.value = String(s.layout?.measuresPerSystem ?? 0);
   pendingClefs = s.parts.map((p) => ({ clef: p.clef, instrument: p.instrument, remove: false, isNew: false }));
   renderPartList();
   dlgSet.showModal();
@@ -920,6 +930,7 @@ dlgSet.addEventListener('close', () => {
   if (title !== s.title || composer !== s.composer || tempo !== s.tempo || tuning !== (s.tuning ?? 440)) {
     editor.updateMeta({ title, composer, tempo, tuning });
   }
+  editor.setMeasuresPerSystem(Number(perSystemSel.value) || null);
   const fifths = Number(keySel.value);
   if (fifths !== s.keyFifths) editor.setKeySignature(fifths);
   const beats = Number(beatsSel.value);
@@ -1181,6 +1192,8 @@ function openMeasureMarks(measure: number) {
   $<HTMLSelectElement>('#mk-times').value = String(a?.repeatTimes ?? 2);
   updateTimesVisible();
   $<HTMLSelectElement>('#mk-volta').value = a?.volta?.join(',') ?? '';
+  $<HTMLInputElement>('#mk-system-break').checked = !!a?.systemBreak;
+  $<HTMLInputElement>('#mk-page-break').checked = !!a?.pageBreak;
   const tc = measure === 0 ? null : timeSigChangeAt(s, measure);
   const ts = timeSigAt(s, measure);
   // 1小節目は曲全体の設定なので「変えない」は出さず、今の値を出す
@@ -1210,6 +1223,10 @@ dlgMeasure.addEventListener('close', () => {
     || (a?.volta?.join(',') ?? '') !== voltaStr) {
     editor.setRepeat(mi, { repeatStart, repeatEnd, repeatTimes: times, volta });
   }
+  // 改行・改ページ
+  const sysBreak = $<HTMLInputElement>('#mk-system-break').checked;
+  const pageBreak = $<HTMLInputElement>('#mk-page-break').checked;
+  if (sysBreak !== !!a?.systemBreak || pageBreak !== !!a?.pageBreak) editor.setBreak(mi, { system: sysBreak, page: pageBreak });
   // 調号
   const wantKey = mkKey.value === '' ? null : Number(mkKey.value);
   if (mi === 0 ? wantKey !== null && wantKey !== s.keyFifths : wantKey !== keyChangeAt(s, mi)) editor.setKeyAt(mi, wantKey);

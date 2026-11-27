@@ -1179,6 +1179,37 @@ export class Editor {
     });
   }
 
+  /** measure 小節目のあとで改行・改ページする／しない。改ページは改行も兼ねる */
+  setBreak(measure: number, patch: { system?: boolean; page?: boolean }) {
+    this.mutate(() => {
+      updateMeasureAttrs(this.score, measure, (a) => {
+        if ('system' in patch) a.systemBreak = patch.system || undefined;
+        if ('page' in patch) a.pageBreak = patch.page || undefined;
+        if (a.pageBreak) a.systemBreak = undefined;
+      });
+    });
+  }
+
+  /** measure 小節目のあとの改行を切り替える（改ページがあれば外す） */
+  toggleSystemBreak(measure: number) {
+    const a = measureAttrsAt(this.score, measure);
+    const on = !!(a?.systemBreak || a?.pageBreak);
+    this.setBreak(measure, { system: !on, page: false });
+  }
+
+  /** 1段の小節数。null（または0）で横幅に合わせて自動 */
+  setMeasuresPerSystem(n: number | null) {
+    const want = n && n > 0 ? Math.min(16, Math.floor(n)) : undefined;
+    if (want === this.score.layout?.measuresPerSystem) return;
+    this.mutate(() => {
+      if (want) this.score.layout = { ...this.score.layout, measuresPerSystem: want };
+      else if (this.score.layout) {
+        delete this.score.layout.measuresPerSystem;
+        if (!Object.keys(this.score.layout).length) delete this.score.layout;
+      }
+    });
+  }
+
   /** リピート記号・番号付きカッコを付け外しする */
   setRepeat(measure: number, patch: { repeatStart?: boolean; repeatEnd?: boolean; volta?: number[] | null; repeatTimes?: number | null }) {
     this.mutate(() => {

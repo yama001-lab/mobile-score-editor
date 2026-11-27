@@ -55,6 +55,16 @@
 - 小節の幅は `measureContentWidth()` が小節の中身・拍子・調号・長さをキーに覚えておく
 - 段・ページをまたぐタイとスラー・ヘアピンは、それぞれの段（ページ）で自分の分だけ描く
 
+### レイアウト（改行・改ページ・1段の小節数）
+
+- 改行・改ページは `MeasureAttrs.systemBreak` / `pageBreak`（その小節の**あと**で切る）。`Editor.setBreak()` / `toggleSystemBreak()`
+- 1段の小節数は `Score.layout.measuresPerSystem`（省略で自動）。`Editor.setMeasuresPerSystem()`
+- 段の分け方は `render.ts` の `breakSystems(score, fits)` だけが決める（改行の指定 → 小節数の指定 → 幅の判定 `fits`）。
+  幅の計算は `layoutSystems()`、ページ分けは `paginate()`（`SystemLayout.pageBreak` で次のページへ）。画面とPDFは同じ処理
+- 指定どおりだと入りきらない段は幅を比例で縮める。小節数指定時の最後の段は、上の段と小節の幅がそろうように広げる
+- 画面だけ `RenderOptions.showBreaks` で段の右端に目印（↵・紙＋破線）を描く。PDFには出さない
+- MusicXML では次の小節の `<print new-system="yes"/>` / `<print new-page="yes"/>`
+
 ## 画面の配置
 
 - `header.topbar`：アプリ全体の操作（ファイル・再生・元に戻す・設定・書き出し）

@@ -73,6 +73,10 @@ export function toMusicXml(score: Score): string {
       const pickup = !!score.pickup && mi === 0;
       out.push(`<measure number="${mi + (score.pickup ? 0 : 1)}"${pickup ? ' implicit="yes"' : ''}>`);
       const attrs = measureAttrsAt(score, mi);
+      // 前の小節のあとで改行・改ページ
+      const prevAttrs = mi > 0 ? measureAttrsAt(score, mi - 1) : undefined;
+      if (prevAttrs?.pageBreak) out.push('<print new-page="yes"/>');
+      else if (prevAttrs?.systemBreak) out.push('<print new-system="yes"/>');
       const ending = (type: string) => `<ending number="${attrs!.volta!.join(', ')}" type="${type}"/>`;
       const voltaKey = attrs?.volta?.join(',');
       const voltaBegins = !!voltaKey && measureAttrsAt(score, mi - 1)?.volta?.join(',') !== voltaKey;
