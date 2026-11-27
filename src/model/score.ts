@@ -89,10 +89,19 @@ export type MusicEvent = NoteEvent | RestEvent;
 
 export interface Measure {
   id: string;
+  /** 声部1（符尾は上。声部2がなければふつうの向き） */
   events: MusicEvent[];
+  /**
+   * 声部2（符尾は下）。省略＝声部2なし。あるときは events と同じく小節をちょうど埋める。
+   * 古い保存データにはないので、読むときは voiceEvents() を使う。
+   */
+  voice2?: MusicEvent[];
   /** 練習番号（A、B…）。いちばん上のパートの小節にだけ付ける */
   rehearsal?: string;
 }
+
+/** 1段の中の声部の数（声部1・声部2） */
+export const VOICE_COUNT = 2;
 
 export interface Part {
   id: string;
@@ -315,6 +324,50 @@ export interface EventLocation {
   partIndex: number;
   measureIndex: number;
   eventIndex: number;
+  /** 0=声部1（省略時）、1=声部2 */
+  voice?: number;
+}
+
+/** 声部の音の並び。声部2がない小節では空の配列（読むだけ用） */
+export function voiceEvents(m: Measure, voice = 0): MusicEvent[] {
+  return voice ? (m.voice2 ?? []) : m.events;
+}
+
+/** 声部の音の並び。声部2がなければ休符で埋めて作る（書き換える前に使う） */
+export function ensureVoice(m: Measure, voice: number, capacity: number): MusicEvent[] {
+  if (!voice) return m.events;
+  return (m.voice2 ??= restsFor(capacity));
+}
+
+export function setVoiceEvents(m: Measure, voice: number, events: MusicEvent[]): void {
+  if (voice) m.voice2 = events;
+  else m.events = events;
+}
+
+/** 小節の全声部の音（声部1、声部2の順） */
+export function measureEvents(m: Measure): MusicEvent[] {
+  return m.voice2 ? [...m.events, ...m.voice2] : m.events;
+}
+
+/** 声部の中で tick の位置から始まる音の番号。休符の途中なら休符を分けてその位置を作る。 */
+export function splitRestAt(events: MusicEvent[], tick: number): number {
+  let t = 0;
+  for (let i = 0; i < events.length; i++) {
+    const len = eventTicks(events[i]);
+    if (t === tick) return i;
+    if (tick < t + len) {
+      if (events[i].kind !== 'rest') return i;
+      events.splice(i, 1, ...restsFor(tick - t), ...restsFor(t + len - tick));
+      return i + restsFor(tick - t).length;
+    }
+    t += len;
+  }
+  return Math.max(0, events.length - 1);
+}
+
+/** 声部の中の番号 index の音が始まるティック */
+export function tickOfIndex(events: MusicEvent[], index: number): number {
+  return events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0);
 }
 
 export function findEvent(score: Score, id: string): EventLocation | null {
@@ -323,22 +376,25 @@ export function findEvent(score: Score, id: string): EventLocation | null {
     for (let m = 0; m < ms.length; m++) {
       const e = ms[m].events.findIndex((ev) => ev.id === id);
       if (e >= 0) return { partIndex: p, measureIndex: m, eventIndex: e };
+      const e2 = ms[m].voice2?.findIndex((ev) => ev.id === id) ?? -1;
+      if (e2 >= 0) return { partIndex: p, measureIndex: m, eventIndex: e2, voice: 1 };
     }
   }
   return null;
 }
 
 export function eventAt(score: Score, loc: EventLocation): MusicEvent | undefined {
-  return score.parts[loc.partIndex]?.measures[loc.measureIndex]?.events[loc.eventIndex];
+  const m = score.parts[loc.partIndex]?.measures[loc.measureIndex];
+  return m ? voiceEvents(m, loc.voice)[loc.eventIndex] : undefined;
 }
 
 /**
- * 小節内の index の位置から ev（複数可）を上書きで置く。後ろの音は削られ、余りは休符になる。
+ * 小節内の index の位置から ev（複数可）を上書きで置く。後ろの音は削られ、余りは休符になる。voice=1 なら声部2に置く。
  * 連符にかかったら、その連符はまるごと消す（途中で切れた連符を残さない）。
  */
-export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEvent[], beat: number = PPQ): void {
+export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEvent[], beat: number = PPQ, voice = 0): void {
   const evs = Array.isArray(ev) ? ev : [ev];
-  const events = m.events;
+  const events = voiceEvents(m, voice);
   let t = events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0);
   const end = t + evs.reduce((s, e) => s + eventTicks(e), 0);
   let i = index;
@@ -347,18 +403,20 @@ export function overwriteAt(m: Measure, index: number, ev: MusicEvent | MusicEve
     i++;
   }
   const filler = t > end ? restsBetween(end, t, beat) : [];
-  m.events = [...events.slice(0, index), ...evs, ...filler, ...events.slice(i)];
+  setVoiceEvents(m, voice, [...events.slice(0, index), ...evs, ...filler, ...events.slice(i)]);
 }
 
 /**
  * 連符の中の index の位置に、書かれた音価 want の音を上書きで置く（長さは連符の中の書かれた音価で数える）。
  * 連符の残りに収まらないときは、収まる最大の音価にする。置いた音を返す（連符の中でなければ null）。
  */
-export function overwriteInTuplet(m: Measure, index: number, want: DurationValue, make: (d: DurationValue) => MusicEvent): MusicEvent | null {
-  const range = tupletRange(m.events, index);
+export function overwriteInTuplet(
+  m: Measure, index: number, want: DurationValue, make: (d: DurationValue) => MusicEvent, voice = 0,
+): MusicEvent | null {
+  const range = tupletRange(voiceEvents(m, voice), index);
   if (!range) return null;
   const [s, e] = range;
-  const events = m.events;
+  const events = voiceEvents(m, voice);
   const tuplet = events[index].tuplet!;
   const sum = (a: number, b: number) => events.slice(a, b).reduce((x, ev) => x + writtenTicks(ev), 0);
   const local = sum(s, index);
@@ -379,12 +437,14 @@ export function overwriteInTuplet(m: Measure, index: number, want: DurationValue
     i++;
   }
   const filler = t > end ? decompose(t - end).map((x) => makeRest(x.duration, x.dots, tuplet)) : [];
-  m.events = [...events.slice(0, index), ev, ...filler, ...events.slice(i)];
+  setVoiceEvents(m, voice, [...events.slice(0, index), ev, ...filler, ...events.slice(i)]);
   return ev;
 }
 
-/** 休符だけの小節は1つの休符にまとめる。 */
+/** 休符だけの小節は1つの休符にまとめる。声部2が休符だけになったら声部2ごと消す。 */
 export function normalizeMeasure(m: Measure, capacity: number): void {
+  // 声部2が休符だけになったら声部2ごと消す
+  if (m.voice2 && m.voice2.every((e) => e.kind === 'rest')) delete m.voice2;
   // 連符の枠（休符だけの連符）は、これから音を入れるために残す
   if (m.events.every((e) => e.kind === 'rest' && !e.tuplet)) {
     // 2つ目以降の休符にコードネームなどが付いているときは、まとめると消えてしまうのでそのまま
@@ -414,11 +474,10 @@ export function reflowPart(part: Part, capacity: CapacityOf, beat: number = PPQ)
 }
 
 /**
- * 小節の並びを、新しい小節の長さ（capacity(i) は流し直したあとの i 番目の長さ）に詰め直す。
+ * 小節の並びを、新しい小節の長さ（capacity(i) は流し直したあとの i 番目の長さ）に詰め直す。声部ごとに流す。
  * 曲の途中の拍子変更・弱起の変更でも使う。
  */
 export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: number = PPQ): Measure[] {
-  const all = source.flatMap((m) => m.events);
   // 練習番号は、元の小節の頭の時刻で新しい小節に付け直す
   const rehearsals: { tick: number; text: string }[] = [];
   let at = 0;
@@ -426,16 +485,38 @@ export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: nu
     if (m.rehearsal) rehearsals.push({ tick: at, text: m.rehearsal });
     at += measureTicks(m);
   }
-  const measures: Measure[] = [];
-  let cur: Measure = { id: uid(), events: [] };
+  const v1 = reflowEvents(source.flatMap((m) => m.events), capacity, beat);
+  const hasV2 = source.some((m) => m.voice2);
+  const v2 = hasV2 ? reflowEvents(source.flatMap((m) => m.voice2 ?? restsFor(measureTicks(m))), capacity, beat) : [];
+  while (v1.length < v2.length) v1.push(restsFor(capOf(capacity, v1.length)));
+  const measures: Measure[] = v1.map((events, i) => {
+    const m: Measure = { id: uid(), events };
+    if (v2[i]) m.voice2 = v2[i];
+    return m;
+  });
+  if (!measures.length) measures.push(createMeasure(capOf(capacity, 0)));
+  measures.forEach((m, i) => normalizeMeasure(m, capOf(capacity, i)));
+  for (const r of rehearsals) {
+    let start = 0;
+    let i = 0;
+    while (i < measures.length - 1 && start + capOf(capacity, i) <= r.tick) start += capOf(capacity, i++);
+    measures[i].rehearsal ??= r.text;
+  }
+  return measures;
+}
+
+/** 音の並びを、小節ごとの並びに分ける（capacity(i) は i 番目の小節の長さ） */
+function reflowEvents(all: MusicEvent[], capacity: CapacityOf, beat: number): MusicEvent[][] {
+  const measures: MusicEvent[][] = [];
+  let cur: MusicEvent[] = [];
   let used = 0;
   const cap = () => capOf(capacity, measures.length);
   const push = (ev: MusicEvent) => {
-    cur.events.push(ev);
+    cur.push(ev);
     used += eventTicks(ev);
     if (used >= cap()) {
       measures.push(cur);
-      cur = { id: uid(), events: [] };
+      cur = [];
       used = 0;
     }
   };
@@ -481,17 +562,9 @@ export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: nu
       first = false;
     }
   }
-  if (cur.events.length) {
-    cur.events.push(...restsBetween(used, cap(), beat));
+  if (cur.length) {
+    cur.push(...restsBetween(used, cap(), beat));
     measures.push(cur);
-  }
-  if (!measures.length) measures.push(createMeasure(cap()));
-  measures.forEach((m, i) => normalizeMeasure(m, capOf(capacity, i)));
-  for (const r of rehearsals) {
-    let start = 0;
-    let i = 0;
-    while (i < measures.length - 1 && start + capOf(capacity, i) <= r.tick) start += capOf(capacity, i++);
-    measures[i].rehearsal ??= r.text;
   }
   return measures;
 }

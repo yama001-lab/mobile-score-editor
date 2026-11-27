@@ -110,6 +110,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .dlg h2 { margin: 0; font-size: 19px; }
 .dlg h3 { margin: 6px 0 0; font-size: 15px; }
 .dlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.dlg label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 15px; color: inherit; }
 .dlg .row label { flex-direction: row; align-items: center; gap: 6px; }
 .dlg input, .dlg select { font-size: 16px; padding: 8px; border: 1px solid var(--btn-border); border-radius: 8px; color: var(--ink); background: #fff; -webkit-user-select: text; user-select: text; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -174,6 +175,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .tool.danger { color: var(--danger); }
 .tool.acc b { font-size: 21px; line-height: 24px; font-weight: 400; }
 .tool.acc span { font-size: 9.5px; }
+.tool.voice2.on { background: #e8f5e9; border-color: #2e7d32; color: #2e7d32; }
 #btn-keyboard { border: 1px solid var(--btn-border); background: #fff; min-width: 52px; }
 #btn-keyboard.on { background: var(--accent-soft); border-color: var(--accent); }
 /* ポップアップのメニュー */
@@ -279,3 +281,4 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 /* 入力欄が開いているときは、楽譜の上端が入力欄に隠れないように空ける */
 #stage:has(.text-entry:not([hidden])) #score-wrap { padding-top: 70px; }
 .menu button:disabled { opacity: .4; cursor: default; }
+.dlg [hidden] { display: none !important; }

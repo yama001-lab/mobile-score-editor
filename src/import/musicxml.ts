@@ -3,7 +3,7 @@
  * Audiveris などの楽譜読み取り（OMR）ソフトや MuseScore の書き出しを、この形で受け取る。
  *
  * この楽譜の形に合わせて単純化する:
- * - 1つの段（staff）につき声部は1つ（最初に出てきた声部）。ほかの声部は捨てる
+ * - 1つの段（staff）につき声部は2つまで（最初に出てきた声部を声部1、次を声部2）。3つ目からは捨てる
  * - ピアノなど2段のパートは、段ごとに別のパートにする
  * - 途中の調号・拍子の変更、リピート記号、番号付きカッコ（ending）、弱起（1小節目の implicit）は取り込む
  * - 連符はそのまま取り込む（入れ子の連符や、ティックが割り切れない7連符などは近い長さに丸める）。装飾音は捨てる
@@ -11,7 +11,8 @@
 import { DurationType, PPQ, ticksOf } from '../model/duration';
 import { Pitch, STEPS, Step } from '../model/pitch';
 import {
-  Clef, MeasureAttrs, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
+  Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, VOICE_COUNT, equalizeMeasureCounts, measureCapacity,
+  normalizeMeasure, uid, MeasureAttrs,
 } from '../model/score';
 import { Bars, TimedEvent, buildMeasures } from './timeline';
 import { EventTexts } from '../model/score';
@@ -41,16 +42,22 @@ function clefOf(el: Element): Clef {
   return 'treble';
 }
 
-interface StaffState {
+interface VoiceState {
   events: TimedEvent[];
-  voice: string | null;
-  clef: Clef | null;
   /** 和音の続きを足すために、直前に置いた音 */
+  last: TimedEvent | null;
+  /** 読んでいる途中の連符 */
+  tup: { key: string; actual: number; normal: number; filled: number; full: number } | null;
+}
+
+interface StaffState {
+  /** MusicXML の声部番号 → この楽譜の声部（出てきた順。2つまで） */
+  voices: Map<string, VoiceState>;
+  clef: Clef | null;
+  /** 直前に置いた音（声部を問わない）。強弱記号などを付ける先 */
   last: TimedEvent | null;
   /** スラー・強弱記号など（musicxml-marks.ts） */
   marks: MarkState;
-  /** 読んでいる途中の連符 */
-  tup: { key: string; actual: number; normal: number; filled: number; full: number } | null;
   /** 次の音符・休符に付けるコードネーム・文字 */
   pending: EventTexts;
 }
@@ -126,7 +133,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null, marks: newMarkState(), tup: null, pending: {} }));
+      if (!s) staves.set(n, (s = { voices: new Map(), clef: null, last: null, marks: newMarkState(), pending: {} }));
       return s;
     };
     let staffCount = 1;
@@ -244,24 +251,26 @@ export function parseMusicXml(xml: string): ImportResult {
             const tie = kids(c, 'tie').some((t) => t.getAttribute('type') === 'start')
               || Array.from(c.getElementsByTagName('tied')).some((t) => t.getAttribute('type') === 'start');
 
+            const vs = st.voices.get(voice);
             const lyrics = readLyrics(c);
             if (isChord) {
               // 和音の2音目以降：直前の音に重ねる（時刻は進めない）
-              if (pitchEl && st.voice === voice && st.last?.pitches) {
-                st.last.pitches.push(readPitch(pitchEl));
-                if (tie) st.last.tie = true;
-                if (lyrics && !st.last.texts?.lyrics) (st.last.texts ??= {}).lyrics = lyrics;
-                readNoteMarks(c, st.marks, st.last, true);
+              if (pitchEl && vs?.last?.pitches) {
+                vs.last.pitches.push(readPitch(pitchEl));
+                if (tie) vs.last.tie = true;
+                if (lyrics && !vs.last.texts?.lyrics) (vs.last.texts ??= {}).lyrics = lyrics;
+                readNoteMarks(c, st.marks, vs.last, true);
               }
               break;
             }
-            st.voice ??= voice;
-            if (voice !== st.voice) {
-              warn.add('1つの段に複数の声部がある所は、最初の声部だけを取り込みました');
+            if (!vs && st.voices.size >= VOICE_COUNT) {
+              warn.add('1つの段に3つ以上の声部がある所は、最初の2つの声部だけを取り込みました');
               pos += dur;
               maxPos = Math.max(maxPos, pos);
               break;
             }
+            const target: VoiceState = vs ?? { events: [], last: null, tup: null };
+            if (!vs) st.voices.set(voice, target);
             const ev: TimedEvent = {
               start: measureStart + pos,
               ticks: dur,
@@ -274,8 +283,9 @@ export function parseMusicXml(xml: string): ImportResult {
             if (texts.chord || texts.text || texts.lyrics) ev.texts = texts;
             st.pending = {};
             readNoteMarks(c, st.marks, ev, false);
-            readTuplet(c, st, ev);
-            st.events.push(ev);
+            readTuplet(c, target, ev);
+            target.events.push(ev);
+            target.last = ev;
             st.last = ev;
             pos += dur;
             break;
@@ -316,15 +326,29 @@ export function parseMusicXml(xml: string): ImportResult {
 
   const parts: Part[] = outParts.map(({ name, staff }, i) => {
     // 元の TimedEvent をそのまま渡す（buildMeasures が placed を書き込み、スラーなどの両端に使う）
-    const built = buildMeasures(staff.events, capOf, caps.length);
-    quantized ||= built.quantized;
-    dropped ||= built.droppedOverlap;
+    const lists = [...staff.voices.values()].map((v) => v.events);
+    if (!lists.length) lists.push([]);
+    const first = buildMeasures(lists[0], capOf, caps.length);
+    const second = lists[1] ? buildMeasures(lists[1], capOf, first.measures.length) : null;
+    let measures = first.measures;
+    if (second && second.measures.length > measures.length) measures = buildMeasures(lists[0], capOf, second.measures.length).measures;
+    for (const b of second ? [first, second] : [first]) {
+      quantized ||= b.quantized;
+      dropped ||= b.droppedOverlap;
+    }
+    if (second) {
+      measures.forEach((m, k) => {
+        const v2 = second.measures[k]?.events;
+        if (v2) m.voice2 = v2;
+        normalizeMeasure(m, capOf(k));
+      });
+    }
     return {
       id: uid(),
       name,
       clef: staff.clef ?? (i > 0 && outParts.length === 2 ? 'bass' : 'treble'),
       instrument: 'piano',
-      measures: built.measures,
+      measures,
     };
   });
   if (quantized) warn.add('細かいリズム（連符など）は近い長さに丸めました');
@@ -366,7 +390,7 @@ export function parseMusicXml(xml: string): ImportResult {
 }
 
 /** <time-modification> と <tuplet> から、連符のまとまりを読む */
-function readTuplet(c: Element, st: StaffState, ev: TimedEvent) {
+function readTuplet(c: Element, st: Pick<VoiceState, 'tup'>, ev: TimedEvent) {
   const tm = kid(c, 'time-modification');
   const actual = Math.round(num(tm, 'actual-notes'));
   const normal = Math.round(num(tm, 'normal-notes'));

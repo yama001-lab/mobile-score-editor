@@ -2,7 +2,7 @@
 import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
 import {
-  Clef, MusicEvent, Score, eventTicks, keyAt, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
+  Clef, MusicEvent, Score, eventTicks, keyAt, measureTicks, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
 } from '../model/score';
 import { parseChord, splitSyllable } from '../model/texts';
 import { MarksXml, marksXml } from './musicxml-marks';
@@ -53,7 +53,8 @@ export function toMusicXml(score: Score): string {
   const marks: MarksXml = marksXml(score);
   score.parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
-    let tiedFromPrev = new Set<string>();
+    // 声部ごとの「前の音からタイが続いている音」
+    const tiedFrom: Set<string>[] = [new Set(), new Set()];
     /** 番ごとの、前の音節がハイフンでつながっているか */
     const hyphenOpen: boolean[] = [];
     const lyricsXml = (ev: MusicEvent): string => {
@@ -101,42 +102,52 @@ export function toMusicXml(score: Score): string {
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>`
           + `<per-minute>${tempo}</per-minute></metronome></direction-type><sound tempo="${tempo}"/></direction>`);
       }
-      m.events.forEach((ev, ei) => {
-        const dur = eventTicks(ev);
-        // 連符：<time-modification> と、頭と終わりに <tuplet>
-        const t = ev.tuplet;
-        const tupStart = !!t && m.events[ei - 1]?.tuplet?.id !== t.id;
-        const tupStop = !!t && m.events[ei + 1]?.tuplet?.id !== t.id;
-        const dots = '<dot/>'.repeat(ev.dots)
-          + (t ? `<time-modification><actual-notes>${t.actual}</actual-notes><normal-notes>${t.normal}</normal-notes></time-modification>` : '');
-        const tupXml = (tupStart ? '<tuplet type="start" bracket="yes"/>' : '') + (tupStop ? '<tuplet type="stop"/>' : '');
-        const before = textsBefore(ev);
-        if (before) out.push(before);
-        out.push(...marks.before(ev));
-        if (ev.kind === 'rest') {
-          const n = marks.notations(ev) + tupXml;
-          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}`
-            + `${n ? `<notations>${n}</notations>` : ''}</note>`);
+      const voices = m.voice2 ? [m.events, m.voice2] : [m.events];
+      voices.forEach((events, v) => {
+        if (v > 0) out.push(`<backup><duration>${measureTicks(m)}</duration></backup>`);
+        const voiceNo = v + 1;
+        // 声部2がある小節では、声部1の符尾は上、声部2は下
+        const stem = voices.length > 1 ? `<stem>${v === 0 ? 'up' : 'down'}</stem>` : '';
+        let tiedFromPrev = tiedFrom[v];
+        events.forEach((ev, ei) => {
+          const dur = eventTicks(ev);
+          // 連符：<time-modification> と、頭と終わりに <tuplet>
+          const t = ev.tuplet;
+          const tupStart = !!t && events[ei - 1]?.tuplet?.id !== t.id;
+          const tupStop = !!t && events[ei + 1]?.tuplet?.id !== t.id;
+          const dots = '<dot/>'.repeat(ev.dots)
+            + (t ? `<time-modification><actual-notes>${t.actual}</actual-notes><normal-notes>${t.normal}</normal-notes></time-modification>` : '');
+          const tupXml = (tupStart ? '<tuplet type="start" bracket="yes"/>' : '') + (tupStop ? '<tuplet type="stop"/>' : '');
+          const before = textsBefore(ev);
+          if (before) out.push(before);
+          out.push(...marks.before(ev));
+          if (ev.kind === 'rest') {
+            const n = marks.notations(ev) + tupXml;
+            out.push(`<note><rest/><duration>${dur}</duration><voice>${voiceNo}</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}`
+              + `${n ? `<notations>${n}</notations>` : ''}</note>`);
+            out.push(...marks.after(ev));
+            tiedFromPrev = new Set();
+            return;
+          }
+          const next = new Set<string>();
+          const lyrics = lyricsXml(ev);
+          ev.pitches.forEach((p, k) => {
+            const key = `${p.step}${p.alter}${p.octave}`;
+            const stop = tiedFromPrev.has(key);
+            const start = !!ev.tie;
+            if (start) next.add(key);
+            const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
+            const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '')
+              + (k === 0 ? marks.notations(ev) + tupXml : '');
+            out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>${voiceNo}</voice>`
+              + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${stem}${tied ? `<notations>${tied}</notations>` : ''}${k === 0 ? lyrics : ''}</note>`);
+          });
           out.push(...marks.after(ev));
-          tiedFromPrev = new Set();
-          return;
-        }
-        const next = new Set<string>();
-        const lyrics = lyricsXml(ev);
-        ev.pitches.forEach((p, k) => {
-          const key = `${p.step}${p.alter}${p.octave}`;
-          const stop = tiedFromPrev.has(key);
-          const start = !!ev.tie;
-          if (start) next.add(key);
-          const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
-          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '')
-            + (k === 0 ? marks.notations(ev) + tupXml : '');
-          out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>1</voice>`
-            + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}${k === 0 ? lyrics : ''}</note>`);
+          tiedFromPrev = next;
         });
-        out.push(...marks.after(ev));
-        tiedFromPrev = next;
+        tiedFrom[v] = tiedFromPrev;
       });
+      if (!m.voice2) tiedFrom[1] = new Set();
       if (attrs?.repeatEnd || voltaEnds) {
         const times = attrs?.repeatTimes ? ` times="${attrs.repeatTimes}"` : '';
         out.push(`<barline location="right">${attrs?.repeatEnd ? '<bar-style>light-heavy</bar-style>' : ''}`

@@ -72,6 +72,10 @@
           <button id="btn-tuplet" class="tool" data-icon="tuplet" title="連符（3連符など）。入力モードでは今の音価の長さで、選択モードでは選んだ音の長さで作る (Ctrl+3 など)" aria-haspopup="menu"><span>連符</span></button>
           <button id="btn-chord" class="tool" data-icon="chord" title="和音：入れる音を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音）"><span>和音</span></button>
         </div>
+        <div class="group" id="voice-tools" aria-label="声部">
+          <button data-voice="0" class="tool acc voice1" title="声部1（符尾が上）に入れる。選んだ音符の声部に切り替わります"><b>1</b><span>声部1</span></button>
+          <button data-voice="1" class="tool acc voice2" title="声部2（符尾が下）に入れる。1段に2つのメロディーを書けます"><b>2</b><span>声部2</span></button>
+        </div>
         <div class="group" aria-label="臨時記号">
           <button data-alter="1" class="tool acc" title="シャープ (+)"><b>♯</b><span>シャープ</span></button>
           <button data-alter="-1" class="tool acc" title="フラット (-)"><b>♭</b><span>フラット</span></button>
@@ -93,6 +97,9 @@
         <div class="group">
           <button id="btn-tempo" class="tool" data-icon="tempo" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）"><span>テンポ</span></button>
           <button id="btn-measure-menu" class="tool" data-icon="measure" title="小節の追加・削除" aria-haspopup="menu"><span>小節</span></button>
+        </div>
+        <div class="group" aria-label="移調">
+          <button id="btn-transpose" class="tool" data-icon="transpose" title="移調（楽譜全体・譜表・選んだ音符を、調か音程を指定して上げ下げ）"><span>移調</span></button>
         </div>
       </div>
     </div>
@@ -165,7 +172,7 @@
         <li>間違いがあれば直し、「Book → Export Book As…」で <b>.mxl</b> を保存</li>
         <li>.mxl を iCloud Drive などで iPad に送り、ここの「PDF・MusicXMLを取り込む」で開く</li>
       </ol>
-      <p class="muted">MuseScore など楽譜ソフトのデータなら、そのソフトで「MusicXML」に書き出せばそのまま取り込めます。取り込めるのは1段につき1声部までで、連符・装飾音などは近い形に直します。</p>
+      <p class="muted">MuseScore など楽譜ソフトのデータなら、そのソフトで「MusicXML」に書き出せばそのまま取り込めます。取り込めるのは1段につき2声部までで、連符・装飾音などは近い形に直します。</p>
       <div class="row end"><button class="pb">閉じる</button></div>
     </form>
   </dialog>
@@ -186,6 +193,37 @@
         <span class="spacer"></span>
         <button value="cancel" class="pb">キャンセル</button>
         <button value="ok" class="pb primary">決定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-transpose">
+    <form method="dialog" class="dlg">
+      <h2>移調</h2>
+      <div class="row seg-row" role="radiogroup" aria-label="指定のしかた">
+        <label class="radio"><input type="radio" name="tr-mode" value="key" checked /> 調を指定</label>
+        <label class="radio"><input type="radio" name="tr-mode" value="interval" /> 音程を指定</label>
+      </div>
+      <div class="row" id="tr-key-row">
+        <label>移調先の調 <select id="tr-key"></select></label>
+      </div>
+      <div class="row" id="tr-interval-row" hidden>
+        <label>音程 <select id="tr-interval"></select></label>
+      </div>
+      <div class="row">
+        <label>向き
+          <select id="tr-dir">
+            <option value="nearest">近い方</option>
+            <option value="up">上へ</option>
+            <option value="down">下へ</option>
+          </select>
+        </label>
+        <label>範囲 <select id="tr-scope"></select></label>
+      </div>
+      <p class="note" id="tr-note"></p>
+      <div class="row end">
+        <button value="cancel" class="pb">キャンセル</button>
+        <button value="ok" class="pb primary">移調する</button>
       </div>
     </form>
   </dialog>

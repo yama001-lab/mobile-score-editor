@@ -1,7 +1,7 @@
 /** 楽譜を「いつ・どの高さを・どれだけ鳴らすか」の一覧にする。音は出さないので単体テストできる。 */
 import { PPQ } from '../model/duration';
 import { toMidi } from '../model/pitch';
-import { Instrument, Score, capacityAt, eventTicks, playOrder, tempoAt } from '../model/score';
+import { Instrument, Score, VOICE_COUNT, capacityAt, eventTicks, playOrder, tempoAt, voiceEvents } from '../model/score';
 import { DynamicsTrack, fermataPauses, noteVelocity, shortenFor } from './expression';
 
 export interface ScheduledNote {
@@ -66,36 +66,53 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
   const notes: ScheduledNote[] = [];
   const marks: ScheduledMark[] = [];
   score.parts.forEach((part, partIndex) => {
-    // タイで次へ続く音（MIDI番号 → 鳴らしている音）
-    let tied = new Map<number, ScheduledNote>();
     const dyn = new DynamicsTrack(score, partIndex);
-    order.forEach((mi, k) => {
-      let tick = 0;
-      part.measures[mi].events.forEach((ev, eventIndex) => {
-        const len = eventTicks(ev);
-        const start = timeAt(k, tick);
-        const end = timeAt(k, tick + len);
-        marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
-        const next = new Map<number, ScheduledNote>();
-        const level = dyn.levelAt(ev);
-        if (ev.kind === 'note') {
-          // スタッカートなどは鳴らす長さを縮める（タイの途中は縮めない）
-          const playEnd = ev.tie ? end : start + (end - start) * shortenFor(ev);
-          for (const p of ev.pitches) {
-            const midi = toMidi(p);
-            let n = tied.get(midi);
-            if (n) n.duration = playEnd - n.time;
-            else {
-              n = { time: start, duration: playEnd - start, midi, instrument: part.instrument, partIndex, velocity: noteVelocity(ev, level) };
-              notes.push(n);
-            }
-            if (ev.tie) next.set(midi, n);
+    /** 声部1の強さ（小節の位置 → 強さ）。声部2の音は、同じ時刻の声部1の強さで鳴らす */
+    const v1Levels = new Map<number, { tick: number; level: number }[]>();
+    // 声部ごとに。目印（再生位置）は声部1だけ
+    for (let voice = 0; voice < VOICE_COUNT; voice++) {
+      if (voice && !part.measures.some((m) => m.voice2)) continue;
+      // タイで次へ続く音（MIDI番号 → 鳴らしている音）
+      let tied = new Map<number, ScheduledNote>();
+      order.forEach((mi, k) => {
+        let tick = 0;
+        voiceEvents(part.measures[mi], voice).forEach((ev, eventIndex) => {
+          const len = eventTicks(ev);
+          const start = timeAt(k, tick);
+          const end = timeAt(k, tick + len);
+          if (!voice) marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
+          const next = new Map<number, ScheduledNote>();
+          let level = dyn.levelAt(ev);
+          if (!voice) {
+            if (!v1Levels.has(mi)) v1Levels.set(mi, []);
+            v1Levels.get(mi)!.push({ tick, level });
+          } else if (!ev.dynamic) {
+            for (const x of v1Levels.get(mi) ?? []) if (x.tick <= tick) level = x.level;
           }
-        }
-        tied = next;
-        tick += len;
+          if (ev.kind === 'note') {
+            // スタッカートなどは鳴らす長さを縮める（タイの途中は縮めない）
+            const playEnd = ev.tie ? end : start + (end - start) * shortenFor(ev);
+            for (const p of ev.pitches) {
+              const midi = toMidi(p);
+              let n = tied.get(midi);
+              if (n) n.duration = playEnd - n.time;
+              else {
+                n = {
+                  time: start, duration: playEnd - start, midi, instrument: part.instrument, partIndex,
+                  velocity: noteVelocity(ev, level),
+                };
+                notes.push(n);
+              }
+              if (ev.tie) next.set(midi, n);
+            }
+          }
+          tied = next;
+          tick += len;
+        });
+        // 声部2のない小節ではタイは切れる
+        if (voice && !part.measures[mi].voice2) tied = new Map();
       });
-    });
+    }
   });
   notes.sort((a, b) => a.time - b.time);
   marks.sort((a, b) => a.time - b.time || a.partIndex - b.partIndex);

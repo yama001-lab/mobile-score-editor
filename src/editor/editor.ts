@@ -8,16 +8,20 @@ import {
 } from '../model/pitch';
 import {
   Clef, copyTexts, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
-  beatTicks, eventAt, eventTicks, findEvent, makeNote, makeRest, makeTupletGroup, measureCapacity, measureTicks, normalizeMeasure,
-  overwriteAt, overwriteInTuplet, restsFor, TimeSignature, tupletRange,
-  capacityAt, keyAt, measureAttrsAt, measureStartTick, reflowMeasures, shiftMeasureMarks, timeSigAt, updateMeasureAttrs,
+  beatTicks, ensureVoice, eventAt, eventTicks, findEvent, makeNote, makeRest, makeTupletGroup, measureCapacity, measureEvents,
+  measureTicks, normalizeMeasure, overwriteAt, overwriteInTuplet, restsFor, splitRestAt, tickOfIndex, TimeSignature, tupletRange,
+  voiceEvents, capacityAt, keyAt, measureAttrsAt, measureStartTick, reflowMeasures, shiftMeasureMarks, timeSigAt, updateMeasureAttrs,
 } from '../model/score';
+import { Interval, transposeKey, transposePitch } from '../model/transpose';
 import { Articulation, Dynamic, SpannerKind } from '../model/score';
 import { setDynamicOn, toggleArticulationOn, toggleSpannerAt } from '../model/marks';
 import {
   Clip, RangeSel, clearRange, eventSpan, extractRange, pasteClip, rangeEnds, rangeEventIds, rangeNotes,
 } from './range';
 import { lyricOf, setLyricOn } from '../model/texts';
+
+/** 移調する範囲。all=楽譜全体（調号も変える）、part=1つの譜表、ids=指定の音符だけ */
+export type TransposeScope = { kind: 'all' } | { kind: 'part'; partIndex: number } | { kind: 'ids'; ids: string[] };
 
 /** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
 export type Mode = 'select' | 'input' | 'pen';
@@ -26,6 +30,8 @@ export interface Cursor {
   partIndex: number;
   measureIndex: number;
   eventIndex: number;
+  /** 入力する声部。0=声部1（省略時）、1=声部2 */
+  voice?: number;
 }
 
 type Listener = (reason: 'score' | 'view') => void;
@@ -186,6 +192,40 @@ export class Editor {
     this.emit('view');
   }
 
+  /** 入力中の声部（0=声部1、1=声部2） */
+  get voice(): number {
+    return this.cursor.voice ?? 0;
+  }
+
+  /** 入力する声部を切り替える。カーソルは同じ拍の位置のまま、もう一方の声部へ移る */
+  setVoice(voice: number) {
+    if (voice === this.voice) return;
+    const c = this.cursor;
+    const m = this.score.parts[c.partIndex]?.measures[c.measureIndex];
+    const tick = m ? tickOfIndex(voiceEvents(m, this.voice), c.eventIndex) : 0;
+    this.setCursorAtTick(c.partIndex, c.measureIndex, voice, tick);
+  }
+
+  /**
+   * カーソルを、小節の頭から tick の位置の声部 voice に置く。
+   * 声部2が休符でまだないところや休符の途中なら、休符を分けて位置を作る（音は変わらないので元に戻すには残さない）。
+   */
+  setCursorAtTick(partIndex: number, measureIndex: number, voice: number, tick: number) {
+    const m = this.score.parts[partIndex]?.measures[measureIndex];
+    if (!m) return;
+    const evs = ensureVoice(m, voice, this.capacityOf(measureIndex));
+    const eventIndex = splitRestAt(evs, tick);
+    const c: Cursor = { partIndex, measureIndex, eventIndex };
+    if (voice) c.voice = voice;
+    this.cursor = c;
+    this.emit('score');
+  }
+
+  /** 選ばれている音符の id（範囲選択を足すときはここを広げる） */
+  selectionIds(): string[] {
+    return this.selectedId ? [this.selectedId] : [];
+  }
+
   get selectedLocation(): EventLocation | null {
     return this.selectedId ? findEvent(this.score, this.selectedId) : null;
   }
@@ -214,6 +254,7 @@ export class Editor {
 
   setCursor(c: Cursor) {
     this.cursor = { ...c };
+    if (!this.cursor.voice) delete this.cursor.voice;
     this.emit('view');
   }
 
@@ -221,11 +262,12 @@ export class Editor {
   moveSelection(delta: number) {
     const loc = this.selectedLocation ?? this.cursor;
     const part = this.score.parts[loc.partIndex];
+    const v = loc.voice ?? 0;
     let m = loc.measureIndex;
     let e = loc.eventIndex + delta;
     while (m >= 0 && m < part.measures.length) {
-      const evs = part.measures[m].events;
-      if (e < 0) { m--; e = m >= 0 ? part.measures[m].events.length - 1 : 0; continue; }
+      const evs = voiceEvents(part.measures[m], v);
+      if (e < 0) { m--; e = m >= 0 ? voiceEvents(part.measures[m], v).length - 1 : 0; continue; }
       if (e >= evs.length) { m++; e = 0; continue; }
       this.select(evs[e].id);
       return;
@@ -251,19 +293,20 @@ export class Editor {
         const loc = findEvent(this.score, id);
         if (!loc) continue;
         const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
-        const ev = m.events[loc.eventIndex];
+        const evs = voiceEvents(m, loc.voice);
+        const ev = evs[loc.eventIndex];
         if (ev.kind === 'rest') continue;
         const rest = makeRest(ev.duration, ev.dots, ev.tuplet);
         copyTexts(ev, rest, false);
-        m.events[loc.eventIndex] = rest;
-        const prev = loc.eventIndex > 0 ? m.events[loc.eventIndex - 1] : undefined;
+        evs[loc.eventIndex] = rest;
+        const prev = loc.eventIndex > 0 ? evs[loc.eventIndex - 1] : undefined;
         if (prev?.kind === 'note') delete prev.tie;
         touched.set(m, loc.measureIndex);
       }
       for (const [m, mi] of touched) normalizeMeasure(m, this.capacityOf(mi));
       const first = locs[0];
       const m = this.score.parts[first.partIndex].measures[first.measureIndex];
-      this.cursor = { ...first, eventIndex: Math.min(first.eventIndex, m.events.length - 1) };
+      this.cursor = this.clampCursor({ ...first, eventIndex: first.eventIndex }, m);
       this.selectedId = null;
     });
   }
@@ -300,7 +343,7 @@ export class Editor {
   private previousPitch(): Pitch | null {
     const part = this.score.parts[this.cursor.partIndex];
     for (let m = this.cursor.measureIndex; m >= 0; m--) {
-      const evs = part.measures[m].events;
+      const evs = voiceEvents(part.measures[m], this.voice);
       const start = m === this.cursor.measureIndex ? Math.min(this.cursor.eventIndex, evs.length) - 1 : evs.length - 1;
       for (let e = start; e >= 0; e--) {
         const ev = evs[e];
@@ -337,20 +380,21 @@ export class Editor {
   private placeAtCursorRaw(pitches: Pitch[] | null) {
     {
       let { partIndex, measureIndex, eventIndex } = this.cursor;
+      const voice = this.voice;
       const part = this.score.parts[partIndex];
       let total = ticksOf(this.inputDuration, this.inputDots);
       let firstId: string | null = null;
       let prevNote: NoteEvent | null = null;
       this.ensureMeasure(measureIndex);
-      const inTuplet = part.measures[measureIndex].events[eventIndex]?.tuplet;
+      const inTuplet = voiceEvents(part.measures[measureIndex], voice)[eventIndex]?.tuplet;
       if (inTuplet) {
         // 連符の中：連符の残りに収まる長さで置く（連符の外へははみ出さない）
         const m = part.measures[measureIndex];
         const ev = overwriteInTuplet(m, eventIndex, { duration: this.inputDuration, dots: this.inputDots },
-          (d) => (pitches ? makeNote(pitches, d.duration, d.dots) : makeRest(d.duration, d.dots)));
+          (d) => (pitches ? makeNote(pitches, d.duration, d.dots) : makeRest(d.duration, d.dots)), voice);
         if (ev) {
           firstId = ev.id;
-          eventIndex = m.events.indexOf(ev) + 1;
+          eventIndex = voiceEvents(m, voice).indexOf(ev) + 1;
         }
         total = 0;
       }
@@ -358,8 +402,9 @@ export class Editor {
         this.ensureMeasure(measureIndex);
         const cap = this.capacityOf(measureIndex);
         const m = part.measures[measureIndex];
-        const start = m.events.slice(0, eventIndex).reduce((s, e) => s + eventTicks(e), 0);
-        if (start >= cap || eventIndex >= m.events.length) {
+        const evs = ensureVoice(m, voice, cap);
+        const start = tickOfIndex(evs, eventIndex);
+        if (start >= cap || eventIndex >= evs.length) {
           measureIndex++;
           eventIndex = 0;
           continue;
@@ -372,7 +417,7 @@ export class Editor {
         for (const pc of pieces) {
           const ev: MusicEvent = pitches ? makeNote(pitches, pc.duration, pc.dots) : makeRest(pc.duration, pc.dots);
           if (prevNote) prevNote.tie = true;
-          overwriteAt(m, eventIndex, ev, beatTicks(timeSigAt(this.score, measureIndex)));
+          overwriteAt(m, eventIndex, ev, beatTicks(timeSigAt(this.score, measureIndex)), voice);
           if (!firstId) firstId = ev.id;
           prevNote = ev.kind === 'note' ? ev : null;
           eventIndex++;
@@ -381,12 +426,13 @@ export class Editor {
       }
       // 小節の終わりまで来たら次の小節の頭へ。最後の小節なら新しい小節を足す。
       const cur = part.measures[measureIndex];
-      if (eventIndex >= cur.events.length) {
+      if (eventIndex >= voiceEvents(cur, voice).length) {
         measureIndex++;
         eventIndex = 0;
         this.ensureMeasure(measureIndex);
+        ensureVoice(part.measures[measureIndex], voice, this.capacityOf(measureIndex));
       }
-      this.cursor = { partIndex, measureIndex, eventIndex };
+      this.cursor = voice ? { partIndex, measureIndex, eventIndex, voice } : { partIndex, measureIndex, eventIndex };
       this.selectedId = firstId;
       this.selectedPitchIndex = 0;
     }
@@ -413,7 +459,8 @@ export class Editor {
     if (!loc) return;
     this.mutate(() => {
       const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
-      const ev = m.events[loc.eventIndex];
+      const evs = voiceEvents(m, loc.voice);
+      const ev = evs[loc.eventIndex];
       if (ev.kind === 'note' && ev.pitches.length > 1) {
         ev.pitches.splice(Math.min(this.selectedPitchIndex, ev.pitches.length - 1), 1);
         this.selectedPitchIndex = 0;
@@ -421,16 +468,17 @@ export class Editor {
       }
       const rest = makeRest(ev.duration, ev.dots, ev.tuplet);
       copyTexts(ev, rest, false);
-      m.events[loc.eventIndex] = rest;
+      evs[loc.eventIndex] = rest;
       this.selectedId = rest.id;
       if (loc.eventIndex > 0) {
-        const prev = m.events[loc.eventIndex - 1];
+        const prev = evs[loc.eventIndex - 1];
         if (prev.kind === 'note') delete prev.tie;
       }
-      const before = m.events.length;
+      const before = evs.length;
       normalizeIfEmpty(m, this.capacityOf(loc.measureIndex));
-      if (m.events.length !== before) this.selectedId = m.events[0]?.id ?? null;
-      this.cursor = { ...loc, eventIndex: Math.min(loc.eventIndex, m.events.length - 1) };
+      const after = voiceEvents(m, loc.voice);
+      if (after !== evs || after.length !== before) this.selectedId = after[0]?.id ?? null;
+      this.cursor = this.clampCursor({ ...loc }, m);
     });
   }
 
@@ -440,16 +488,17 @@ export class Editor {
     this.mutate(() => {
       const cap = this.capacityOf(loc.measureIndex);
       const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
-      const ev = m.events[loc.eventIndex];
+      const evs = voiceEvents(m, loc.voice);
+      const ev = evs[loc.eventIndex];
       if (ev.tuplet) {
         // 連符の中：連符の中だけで長さを変える
         const tuplet = ev.tuplet;
-        m.events.splice(loc.eventIndex, 1, ...decompose(ticksOf(ev.duration, ev.dots)).map((d) => makeRest(d.duration, d.dots, tuplet)));
-        const placed = overwriteInTuplet(m, loc.eventIndex, { duration, dots }, (d) => ({ ...ev, duration: d.duration, dots: d.dots }) as MusicEvent);
+        evs.splice(loc.eventIndex, 1, ...decompose(ticksOf(ev.duration, ev.dots)).map((d) => makeRest(d.duration, d.dots, tuplet)));
+        const placed = overwriteInTuplet(m, loc.eventIndex, { duration, dots }, (d) => ({ ...ev, duration: d.duration, dots: d.dots }) as MusicEvent, loc.voice);
         if (placed) { this.inputDuration = placed.duration; this.inputDots = placed.dots; }
         return;
       }
-      const start = m.events.slice(0, loc.eventIndex).reduce((s, e) => s + eventTicks(e), 0);
+      const start = tickOfIndex(evs, loc.eventIndex);
       let want = ticksOf(duration, dots);
       if (want > cap - start) {
         // 小節に収まらないときは、収まる最大の音価にする
@@ -461,8 +510,8 @@ export class Editor {
       }
       const replaced: MusicEvent = { ...ev, duration, dots } as MusicEvent;
       // 元の音の長さ分を休符に戻してから、新しい長さで上書きし直す
-      m.events.splice(loc.eventIndex, 1, ...decomposeRests(eventTicks(ev)));
-      overwriteAt(m, loc.eventIndex, replaced, beatTicks(timeSigAt(this.score, loc.measureIndex)));
+      evs.splice(loc.eventIndex, 1, ...decomposeRests(eventTicks(ev)));
+      overwriteAt(m, loc.eventIndex, replaced, beatTicks(timeSigAt(this.score, loc.measureIndex)), loc.voice);
       this.inputDuration = duration;
       this.inputDots = dots;
     });
@@ -544,14 +593,14 @@ export class Editor {
   shiftSelected(delta: number) {
     const loc = this.selectedLocation;
     if (!loc) return;
-    const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
+    const evs = voiceEvents(this.score.parts[loc.partIndex].measures[loc.measureIndex], loc.voice);
     const j = loc.eventIndex + delta;
-    if (j < 0 || j >= m.events.length) return;
+    if (j < 0 || j >= evs.length) return;
     // 連符の中と外は入れ替えない（連符の中どうしなら入れ替える）
-    if ((m.events[j].tuplet || m.events[loc.eventIndex].tuplet) && m.events[j].tuplet?.id !== m.events[loc.eventIndex].tuplet?.id) return;
+    if ((evs[j].tuplet || evs[loc.eventIndex].tuplet) && evs[j].tuplet?.id !== evs[loc.eventIndex].tuplet?.id) return;
     this.mutate(() => {
-      const [ev] = m.events.splice(loc.eventIndex, 1);
-      m.events.splice(j, 0, ev);
+      const [ev] = evs.splice(loc.eventIndex, 1);
+      evs.splice(j, 0, ev);
       this.cursor = { ...loc, eventIndex: j };
     });
   }
@@ -567,7 +616,8 @@ export class Editor {
   /** 対象の音が連符の中にあるか */
   get inTuplet(): boolean {
     const loc = this.tupletTarget();
-    return !!this.score.parts[loc.partIndex]?.measures[loc.measureIndex]?.events[loc.eventIndex]?.tuplet;
+    const m = this.score.parts[loc.partIndex]?.measures[loc.measureIndex];
+    return !!(m && voiceEvents(m, loc.voice)[loc.eventIndex]?.tuplet);
   }
 
   /**
@@ -579,7 +629,8 @@ export class Editor {
     const loc = this.tupletTarget();
     this.ensureMeasure(loc.measureIndex);
     const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
-    const target = m.events[loc.eventIndex];
+    const evs = ensureVoice(m, loc.voice ?? 0, this.capacityOf(loc.measureIndex));
+    const target = evs[loc.eventIndex];
     if (!target) return '連符を置く位置がありません';
     if (target.tuplet) return 'すでに連符になっています（連符の中に連符は作れません）';
     const fromSelection = this.mode === 'select' && !!this.selectedId;
@@ -590,10 +641,10 @@ export class Editor {
         ? `${actual}連符は付点の音価（付点4分など）を選んでから作ってください`
         : 'この長さでは連符を作れません。もっと長い音価を選んでください';
     }
-    const start = m.events.slice(0, loc.eventIndex).reduce((s, e) => s + eventTicks(e), 0);
+    const start = tickOfIndex(evs, loc.eventIndex);
     if (start + span > this.capacityOf(loc.measureIndex)) return '小節の残りに収まりません。短い音価を選ぶか、小節の頭で作ってください';
     this.mutate(() => {
-      overwriteAt(m, loc.eventIndex, group, beatTicks(timeSigAt(this.score, loc.measureIndex)));
+      overwriteAt(m, loc.eventIndex, group, beatTicks(timeSigAt(this.score, loc.measureIndex)), loc.voice ?? 0);
       this.inputDuration = group[0].duration;
       this.inputDots = group[0].dots;
       this.cursor = { ...loc };
@@ -607,28 +658,36 @@ export class Editor {
   removeTuplet() {
     const loc = this.tupletTarget();
     const m = this.score.parts[loc.partIndex]?.measures[loc.measureIndex];
-    const range = m ? tupletRange(m.events, loc.eventIndex) : null;
+    const evs = m ? voiceEvents(m, loc.voice) : [];
+    const range = m ? tupletRange(evs, loc.eventIndex) : null;
     if (!m || !range) return;
     this.mutate(() => {
       const [s, e] = range;
-      const len = m.events.slice(s, e).reduce((x, ev) => x + eventTicks(ev), 0);
+      const len = evs.slice(s, e).reduce((x, ev) => x + eventTicks(ev), 0);
       const rests = restsFor(len);
-      m.events.splice(s, e - s, ...rests);
-      const prev = m.events[s - 1];
+      evs.splice(s, e - s, ...rests);
+      const prev = evs[s - 1];
       if (prev?.kind === 'note') delete prev.tie;
       normalizeMeasure(m, this.capacityOf(loc.measureIndex));
-      this.cursor = { ...loc, eventIndex: Math.min(s, m.events.length - 1) };
-      this.selectedId = m.events[this.cursor.eventIndex]?.id ?? null;
+      this.cursor = this.clampCursor({ ...loc, eventIndex: s }, m);
+      this.selectedId = voiceEvents(m, loc.voice)[this.cursor.eventIndex]?.id ?? null;
     });
   }
 
   /** カーソルが、loc の音符のすぐ次を指しているか */
   private cursorFollows(loc: EventLocation): boolean {
     const c = this.cursor;
-    if (c.partIndex !== loc.partIndex) return false;
+    if (c.partIndex !== loc.partIndex || (c.voice ?? 0) !== (loc.voice ?? 0)) return false;
     const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
     if (c.measureIndex === loc.measureIndex) return c.eventIndex === loc.eventIndex + 1;
-    return loc.eventIndex === m.events.length - 1 && c.measureIndex === loc.measureIndex + 1 && c.eventIndex === 0;
+    return loc.eventIndex === voiceEvents(m, loc.voice).length - 1 && c.measureIndex === loc.measureIndex + 1 && c.eventIndex === 0;
+  }
+
+  /** 声部2が消えたときなどに、カーソルを小節の中に収める */
+  private clampCursor(c: Cursor, m: Measure): Cursor {
+    if (c.voice && !m.voice2) return { ...c, eventIndex: 0 };
+    const n = voiceEvents(m, c.voice).length;
+    return { ...c, eventIndex: Math.max(0, Math.min(c.eventIndex, n - 1)) };
   }
 
   private chordTargets(note: NoteEvent): number[] {
@@ -941,7 +1000,9 @@ export class Editor {
         const full = measureCapacity(timeSigAt(this.score, 0));
         for (const p of this.score.parts) {
           const m0 = p.measures[0];
-          m0.events = [...restsFor(full - measureTicks(m0)), ...m0.events];
+          const pad = full - measureTicks(m0);
+          m0.events = [...restsFor(pad), ...m0.events];
+          if (m0.voice2) m0.voice2 = [...restsFor(pad), ...m0.voice2];
           normalizeMeasure(m0, full);
         }
       }
@@ -1115,14 +1176,21 @@ export class Editor {
         const cur = measureTicks(m0);
         if (newCap >= cur) {
           m0.events = [...restsFor(newCap - cur), ...m0.events];
+          if (m0.voice2) m0.voice2 = [...restsFor(newCap - cur), ...m0.voice2];
         } else {
           const drop = cur - newCap;
           const [head, tail] = reflowMeasures([m0], (j) => (j === 0 ? drop : newCap));
-          const headIsRest = head.events.every((e) => e.kind === 'rest');
-          if (headIsRest) m0.events = tail?.events ?? restsFor(newCap);
-          else m0.events = reflowMeasures([m0], (j) => (j === 0 ? newCap : drop))[0].events;
-          const last = m0.events[m0.events.length - 1];
-          if (last?.kind === 'note' && !headIsRest) delete last.tie;
+          const headIsRest = measureEvents(head).every((e) => e.kind === 'rest');
+          const keep = headIsRest ? tail : reflowMeasures([m0], (j) => (j === 0 ? newCap : drop))[0];
+          m0.events = keep?.events ?? restsFor(newCap);
+          if (keep?.voice2) m0.voice2 = keep.voice2;
+          else delete m0.voice2;
+          if (!headIsRest) {
+            for (const evs of [m0.events, m0.voice2 ?? []]) {
+              const last = evs[evs.length - 1];
+              if (last?.kind === 'note') delete last.tie;
+            }
+          }
         }
         normalizeMeasure(m0, newCap);
       }
@@ -1130,6 +1198,35 @@ export class Editor {
       else delete this.score.pickup;
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: 0, eventIndex: 0 };
       this.selectedId = null;
+    });
+  }
+
+  /**
+   * 移調。音程（白鍵の数と半音の数）で動かす。楽譜全体なら調号も一緒に変え、
+   * 調号が7つを超えるときは異名同音の調（例：嬰ト長調→変イ長調）に読み替える。
+   * 譜表・音符だけのときは調号はそのままで、臨時記号で書く。
+   */
+  transpose(interval: Interval, scope: TransposeScope = { kind: 'all' }) {
+    if (!interval.steps && !interval.semitones) return;
+    const ids = scope.kind === 'ids' ? new Set(scope.ids) : null;
+    if (ids && !ids.size) return;
+    this.mutate(() => {
+      let iv = interval;
+      if (scope.kind === 'all') {
+        const k = transposeKey(this.score.keyFifths, interval);
+        this.score.keyFifths = k.fifths;
+        iv = k.interval;
+        // 曲の途中の調号の変更も同じだけ動かす
+        for (const a of this.score.measureAttrs ?? []) if (a.keyFifths !== undefined) a.keyFifths = transposeKey(a.keyFifths, interval).fifths;
+      }
+      this.score.parts.forEach((part, pi) => {
+        if (scope.kind === 'part' && scope.partIndex !== pi) return;
+        for (const m of part.measures)
+          for (const ev of measureEvents(m)) {
+            if (ev.kind !== 'note' || (ids && !ids.has(ev.id))) continue;
+            ev.pitches = ev.pitches.map((p) => transposePitch(p, iv)).sort(comparePitch);
+          }
+      });
     });
   }
 
