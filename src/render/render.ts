@@ -3,7 +3,7 @@
  * 描いた音符の位置（HitMap）を返し、タップ・ペン入力の当たり判定に使う。
  */
 import {
-  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Voice,
+  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Tuplet, Voice,
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
 import { Clef, MusicEvent, Score, measureCapacity, tempoMarkAt } from '../model/score';
@@ -78,6 +78,46 @@ interface BuiltMeasure {
   notes: StaveNote[];
   voice: Voice;
   events: MusicEvent[];
+  tuplets: Tuplet[];
+}
+
+const BEAMABLE = new Set(['8', '16', '32']);
+
+/** 連符の中で、続いている8分以下の音符を1本の連桁にする */
+function tupletBeams(events: MusicEvent[], notes: StaveNote[]): Beam[] {
+  const beams: Beam[] = [];
+  let run: StaveNote[] = [];
+  let runId: string | null = null;
+  const flush = () => {
+    if (run.length > 1) beams.push(new Beam(run, true));
+    run = [];
+  };
+  events.forEach((ev, i) => {
+    const id = ev.tuplet?.id ?? null;
+    if (id !== runId) { flush(); runId = id; }
+    if (id && ev.kind === 'note' && BEAMABLE.has(ev.duration)) run.push(notes[i]);
+    else flush();
+  });
+  flush();
+  return beams;
+}
+
+/** 連続して同じ連符 id を持つ音をまとめて VexFlow の Tuplet にする（音の長さもここで縮まる） */
+function buildTuplets(events: MusicEvent[], notes: StaveNote[]): Tuplet[] {
+  const out: Tuplet[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const t = events[i].tuplet;
+    if (!t) continue;
+    let e = i + 1;
+    while (e < events.length && events[e].tuplet?.id === t.id) e++;
+    out.push(new Tuplet(notes.slice(i, e), {
+      num_notes: t.actual,
+      notes_occupied: t.normal,
+      ratioed: false,
+    }));
+    i = e - 1;
+  }
+  return out;
 }
 
 function buildMeasure(score: Score, partIndex: number, measureIndex: number, opts: RenderOptions): BuiltMeasure {
@@ -123,9 +163,10 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
     if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     return note;
   });
+  const tuplets = buildTuplets(events, notes);
   const voice = new Voice({ num_beats: ts.beats, beat_value: ts.beatType }).setMode(Voice.Mode.SOFT);
   voice.addTickables(notes);
-  return { notes, voice, events };
+  return { notes, voice, events, tuplets };
 }
 
 /** 小節ごとの必要な幅（音符部分のみ） */
@@ -314,11 +355,14 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
 
       built.forEach((b, pi) => {
         const stave = staves[pi];
-        const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note'), {
+        // 連符の音は連符ごとに連桁でつなぎ、それ以外は拍ごとに自動でつなぐ
+        const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note' && !b.events[i].tuplet), {
           groups: Beam.getDefaultBeamGroups(`${score.timeSignature.beats}/${score.timeSignature.beatType}`),
         });
+        beams.push(...tupletBeams(b.events, b.notes));
         b.voice.draw(ctx, stave);
         beams.forEach((bm) => bm.setContext(ctx).draw());
+        b.tuplets.forEach((t) => t.setContext(ctx).draw());
 
         const evHits: EventHit[] = b.notes.map((n, i) => {
           const nx = n.getAbsoluteX();

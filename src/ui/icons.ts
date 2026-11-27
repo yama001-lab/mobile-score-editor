@@ -21,6 +21,8 @@ export const ICONS = {
   dot: svg(head(true, 8.5) + '<path d="M11.9 16.6V3.5"/><circle cx="17.5" cy="16.5" r="1.7" fill="currentColor" stroke="none"/>'),
   rest: svg('<path d="M9.5 3.5l4.6 5.2-3.4 4 4.4 5.1c-2.6-1.4-5.4-.6-3.4 2.8" stroke-width="2.1"/>'),
   tie: svg(head(true, 6, 15) + head(true, 18, 15) + '<path d="M5 10.5q7-5 14 0"/>'),
+  tuplet: svg('<path d="M3.5 7.5V5h17v2.5"/><text x="12" y="8.2" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">3</text>'
+    + '<path d="M6.5 19.5v-9M12 19.5v-9M17.5 19.5v-9M6.5 10.5h11"/><circle cx="5" cy="19.7" r="1.9" fill="currentColor" stroke="none"/><circle cx="10.5" cy="19.7" r="1.9" fill="currentColor" stroke="none"/><circle cx="16" cy="19.7" r="1.9" fill="currentColor" stroke="none"/>'),
   chord: svg(head(true, 9.5, 18.5) + head(true, 9.5, 12.5) + '<path d="M12.9 17.6V3.5"/>'),
   back: svg('<path d="M9 5h11v14H9l-6-7z"/><path d="M12.5 9.5l5 5m0-5l-5 5"/>'),
   up: svg('<path d="M6 14l6-6 6 6"/>'),

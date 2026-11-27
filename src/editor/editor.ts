@@ -8,8 +8,8 @@ import {
 } from '../model/pitch';
 import {
   Clef, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
-  eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
-  TimeSignature,
+  eventAt, eventTicks, findEvent, makeNote, makeRest, makeTupletGroup, measureCapacity, normalizeMeasure, overwriteAt,
+  overwriteInTuplet, reflowPart, restsFor, TimeSignature, tupletRange,
 } from '../model/score';
 
 /** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
@@ -219,7 +219,7 @@ export class Editor {
         const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
         const ev = m.events[loc.eventIndex];
         if (ev.kind === 'rest') continue;
-        m.events[loc.eventIndex] = makeRest(ev.duration, ev.dots);
+        m.events[loc.eventIndex] = makeRest(ev.duration, ev.dots, ev.tuplet);
         const prev = loc.eventIndex > 0 ? m.events[loc.eventIndex - 1] : undefined;
         if (prev?.kind === 'note') delete prev.tie;
         touched.add(m);
@@ -306,6 +306,19 @@ export class Editor {
       let total = ticksOf(this.inputDuration, this.inputDots);
       let firstId: string | null = null;
       let prevNote: NoteEvent | null = null;
+      this.ensureMeasure(measureIndex);
+      const inTuplet = part.measures[measureIndex].events[eventIndex]?.tuplet;
+      if (inTuplet) {
+        // 連符の中：連符の残りに収まる長さで置く（連符の外へははみ出さない）
+        const m = part.measures[measureIndex];
+        const ev = overwriteInTuplet(m, eventIndex, { duration: this.inputDuration, dots: this.inputDots },
+          (d) => (pitches ? makeNote(pitches, d.duration, d.dots) : makeRest(d.duration, d.dots)));
+        if (ev) {
+          firstId = ev.id;
+          eventIndex = m.events.indexOf(ev) + 1;
+        }
+        total = 0;
+      }
       while (total > 0) {
         this.ensureMeasure(measureIndex);
         const m = part.measures[measureIndex];
@@ -369,7 +382,7 @@ export class Editor {
         this.selectedPitchIndex = 0;
         return;
       }
-      const rest = makeRest(ev.duration, ev.dots);
+      const rest = makeRest(ev.duration, ev.dots, ev.tuplet);
       m.events[loc.eventIndex] = rest;
       this.selectedId = rest.id;
       if (loc.eventIndex > 0) {
@@ -390,6 +403,14 @@ export class Editor {
       const cap = this.capacity;
       const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
       const ev = m.events[loc.eventIndex];
+      if (ev.tuplet) {
+        // 連符の中：連符の中だけで長さを変える
+        const tuplet = ev.tuplet;
+        m.events.splice(loc.eventIndex, 1, ...decompose(ticksOf(ev.duration, ev.dots)).map((d) => makeRest(d.duration, d.dots, tuplet)));
+        const placed = overwriteInTuplet(m, loc.eventIndex, { duration, dots }, (d) => ({ ...ev, duration: d.duration, dots: d.dots }) as MusicEvent);
+        if (placed) { this.inputDuration = placed.duration; this.inputDots = placed.dots; }
+        return;
+      }
       const start = m.events.slice(0, loc.eventIndex).reduce((s, e) => s + eventTicks(e), 0);
       let want = ticksOf(duration, dots);
       if (want > cap - start) {
@@ -486,10 +507,78 @@ export class Editor {
     const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
     const j = loc.eventIndex + delta;
     if (j < 0 || j >= m.events.length) return;
+    // 連符の中と外は入れ替えない（連符の中どうしなら入れ替える）
+    if ((m.events[j].tuplet || m.events[loc.eventIndex].tuplet) && m.events[j].tuplet?.id !== m.events[loc.eventIndex].tuplet?.id) return;
     this.mutate(() => {
       const [ev] = m.events.splice(loc.eventIndex, 1);
       m.events.splice(j, 0, ev);
       this.cursor = { ...loc, eventIndex: j };
+    });
+  }
+
+  // ---------- 連符 ----------
+
+  /** 連符を作る・外す対象：選択モードなら選んだ音、それ以外はカーソルの位置 */
+  private tupletTarget(): EventLocation {
+    const loc = this.mode === 'select' ? this.selectedLocation : null;
+    return loc ?? { ...this.cursor };
+  }
+
+  /** 対象の音が連符の中にあるか */
+  get inTuplet(): boolean {
+    const loc = this.tupletTarget();
+    return !!this.score.parts[loc.partIndex]?.measures[loc.measureIndex]?.events[loc.eventIndex]?.tuplet;
+  }
+
+  /**
+   * actual 連符（3なら3連符）を作る。長さは、選択モードでは選んだ音の長さ、入力モードでは今の音価。
+   * 選んだ音が音符なら、その高さを連符の1つ目にする。入力モードでは連符の頭から続けて入力できる。
+   * 作れないときは理由を返す。
+   */
+  createTuplet(actual: number): string | null {
+    const loc = this.tupletTarget();
+    this.ensureMeasure(loc.measureIndex);
+    const m = this.score.parts[loc.partIndex].measures[loc.measureIndex];
+    const target = m.events[loc.eventIndex];
+    if (!target) return '連符を置く位置がありません';
+    if (target.tuplet) return 'すでに連符になっています（連符の中に連符は作れません）';
+    const fromSelection = this.mode === 'select' && !!this.selectedId;
+    const span = fromSelection ? eventTicks(target) : ticksOf(this.inputDuration, this.inputDots);
+    const group = makeTupletGroup(span, actual, fromSelection ? target : undefined);
+    if (!group) {
+      return actual === 2 || actual === 4
+        ? `${actual}連符は付点の音価（付点4分など）を選んでから作ってください`
+        : 'この長さでは連符を作れません。もっと長い音価を選んでください';
+    }
+    const start = m.events.slice(0, loc.eventIndex).reduce((s, e) => s + eventTicks(e), 0);
+    if (start + span > this.capacity) return '小節の残りに収まりません。短い音価を選ぶか、小節の頭で作ってください';
+    this.mutate(() => {
+      overwriteAt(m, loc.eventIndex, group);
+      this.inputDuration = group[0].duration;
+      this.inputDots = group[0].dots;
+      this.cursor = { ...loc };
+      this.selectedId = group[0].id;
+      this.selectedPitchIndex = 0;
+    });
+    return null;
+  }
+
+  /** 対象の音を含む連符を外し、その長さの休符に戻す */
+  removeTuplet() {
+    const loc = this.tupletTarget();
+    const m = this.score.parts[loc.partIndex]?.measures[loc.measureIndex];
+    const range = m ? tupletRange(m.events, loc.eventIndex) : null;
+    if (!m || !range) return;
+    this.mutate(() => {
+      const [s, e] = range;
+      const len = m.events.slice(s, e).reduce((x, ev) => x + eventTicks(ev), 0);
+      const rests = restsFor(len);
+      m.events.splice(s, e - s, ...rests);
+      const prev = m.events[s - 1];
+      if (prev?.kind === 'note') delete prev.tie;
+      normalizeMeasure(m, this.capacity);
+      this.cursor = { ...loc, eventIndex: Math.min(s, m.events.length - 1) };
+      this.selectedId = m.events[this.cursor.eventIndex]?.id ?? null;
     });
   }
 
