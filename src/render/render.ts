@@ -82,7 +82,8 @@ export interface SystemLayout {
 const MARGIN_X = 24;
 const PART_SPACING = 110;
 const SYSTEM_GAP = 30;
-const TITLE_HEIGHT = 90;
+/** 最初のページの上に空けるタイトルの高さ */
+export const TITLE_HEIGHT = 90;
 const COLOR_SELECTED = '#1565c0';
 /** 声部2の入力位置の色（MuseScore と同じく緑系） */
 const COLOR_VOICE2 = 'rgba(46,125,50,0.18)';
@@ -270,8 +271,30 @@ function modifiersWidth(score: Score, mi: number, systemStart: boolean): number 
   return w + 10;
 }
 
+/**
+ * 小節の幅の覚え書き。幅は小節の中身・拍子・調号・小節の長さだけで決まるので、
+ * それを文字列にしたものをキーにして、編集のたびに全小節を組み直さないようにする。
+ */
+const widthCache = new Map<string, number>();
+
+function measureWidthKey(score: Score, mi: number): string {
+  return JSON.stringify([
+    score.parts.map((p) => [p.clef, p.measures[mi]]), timeSigAt(score, mi), keyAt(score, mi), capacityAt(score, mi),
+  ]);
+}
+
 /** 小節ごとの必要な幅（音符部分のみ） */
 function measureContentWidth(score: Score, measureIndex: number, opts: RenderOptions): number {
+  const key = measureWidthKey(score, measureIndex);
+  const hit = widthCache.get(key);
+  if (hit !== undefined) return hit;
+  if (widthCache.size > 4000) widthCache.clear();
+  const w = computeMeasureContentWidth(score, measureIndex, opts);
+  widthCache.set(key, w);
+  return w;
+}
+
+function computeMeasureContentWidth(score: Score, measureIndex: number, opts: RenderOptions): number {
   const perPart = score.parts.map((_, p) => buildMeasure(score, p, measureIndex, opts).map((b) => b.voice));
   const f = new Formatter();
   perPart.forEach((vs) => f.joinVoices(vs));
@@ -450,6 +473,19 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   const boxes: SystemBox[] = [];
   const partOf = new Map<string, number>();
 
+  // 前のページ（画面では前の段）から続くタイ：終わりの半分をこのページに描く
+  const firstMi = page.systems[0]?.measures[0];
+  if (firstMi) {
+    score.parts.forEach((part) => {
+      for (const voice of [0, 1]) {
+        const prev = voiceEvents(part.measures[firstMi - 1], voice);
+        const last = prev[prev.length - 1];
+        const next = voiceEvents(part.measures[firstMi], voice)[0];
+        if (last?.kind === 'note' && last.tie && next?.kind === 'note') ties.push({ from: last.id, to: next.id });
+      }
+    });
+  }
+
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
     let x = MARGIN_X;
@@ -604,7 +640,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   for (const t of ties) {
     const a = allNotes.get(t.from);
     const b = allNotes.get(t.to);
-    if (!a) continue;
+    if (!a && !b) continue;
     const fromEv = findById(score, t.from);
     const toEv = findById(score, t.to);
     if (!fromEv || fromEv.kind !== 'note' || !toEv || toEv.kind !== 'note') continue;
@@ -615,15 +651,18 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       if (j >= 0) { first.push(i); last.push(j); }
     });
     if (!first.length) continue;
-    if (b && b.system === a.system) {
+    if (a && b && b.system === a.system) {
       new StaveTie({ first_note: a.note, last_note: b.note, first_indices: first, last_indices: last }).setContext(ctx).draw();
     } else {
-      new StaveTie({ first_note: a.note, last_note: null, first_indices: first, last_indices: first }).setContext(ctx).draw();
+      if (a) new StaveTie({ first_note: a.note, last_note: null, first_indices: first, last_indices: first }).setContext(ctx).draw();
       if (b) new StaveTie({ first_note: null, last_note: b.note, first_indices: last, last_indices: last }).setContext(ctx).draw();
     }
   }
 
-  drawMarks(ctx, score, allNotes, boxes, partOf);
+  const lastSys = page.systems[page.systems.length - 1];
+  drawMarks(ctx, score, allNotes, boxes, partOf, page.systems.length
+    ? { first: page.systems[0].measures[0], last: lastSys.measures[lastSys.measures.length - 1] }
+    : undefined);
 
   return { hits, tempoHits, textHits, height };
 }

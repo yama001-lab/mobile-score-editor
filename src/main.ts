@@ -10,7 +10,8 @@ import { Player } from './audio/player';
 import { ScheduledMark } from './audio/schedule';
 import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
-import { EventHit, MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
+import { EventHit, MeasureHit, TempoHit, diatonicAtY } from './render/render';
+import { ScoreView } from './render/view';
 import { setupTranspose } from './ui/transpose';
 import { applyIcons, ICONS, setIcon } from './ui/icons';
 import { PenLayer } from './handwriting/pen';
@@ -37,6 +38,8 @@ let hits: MeasureHit[] = [];
 let tempoHits: TempoHit[] = [];
 let textHits: TextHit[] = [];
 let zoom = Number(safeGet('score-editor:zoom')) || 1;
+/** 変わった段だけを描き直す */
+const view = new ScoreView(scoreEl);
 
 // 手書きモードで楽譜の上に重ねる層（ステップ3）
 const penLayer = new PenLayer({
@@ -69,7 +72,7 @@ function render() {
   const avail = Math.max(320, wrap.clientWidth - 24);
   const width = Math.min(avail / zoom, 1100);
   scoreEl.style.width = width * zoom + 'px';
-  const res = renderScore(scoreEl, editor.score, {
+  const res = view.render(editor.score, {
     width,
     scale: zoom,
     selectedId: editor.selectedId,
@@ -81,7 +84,7 @@ function render() {
   hits = res.hits;
   tempoHits = res.tempoHits;
   textHits = res.textHits;
-  scoreEl.appendChild(playheadLayer);
+  if (playheadLayer.parentElement !== scoreEl) scoreEl.appendChild(playheadLayer);
   penLayer.attach();
   focusInputPosition();
   drawPlayhead();

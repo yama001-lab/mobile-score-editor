@@ -81,6 +81,8 @@ button, select, input { font: inherit; color: inherit; }
   -webkit-touch-callout: none; /* 長押しで範囲選択するので、iPadの長押しメニューを出さない */
 }
 .score svg { display: block; }
+/* 段ごとに別の SVG に描くので、五線の外へはみ出す音符・記号を切らない */
+.score-system svg { overflow: visible; }
 .score.input-mode { cursor: crosshair; }
 /* モードの説明（切り替えたときに少しだけ出す） */
 .hint {
