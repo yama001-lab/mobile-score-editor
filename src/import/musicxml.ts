@@ -6,9 +6,9 @@
  * - 1つの段（staff）につき声部は1つ（最初に出てきた声部）。ほかの声部は捨てる
  * - ピアノなど2段のパートは、段ごとに別のパートにする
  * - 拍子は最初のものだけ（途中で変わったら、最初の拍子で小節を引き直す）
- * - 連符・装飾音は近い長さに丸める／捨てる
+ * - 連符はそのまま取り込む（入れ子の連符や、ティックが割り切れない7連符などは近い長さに丸める）。装飾音は捨てる
  */
-import { PPQ } from '../model/duration';
+import { DurationType, PPQ, ticksOf } from '../model/duration';
 import { Pitch, STEPS, Step } from '../model/pitch';
 import {
   Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
@@ -47,7 +47,13 @@ interface StaffState {
   last: TimedEvent | null;
   /** スラー・強弱記号など（musicxml-marks.ts） */
   marks: MarkState;
+  /** 読んでいる途中の連符 */
+  tup: { key: string; actual: number; normal: number; filled: number; full: number } | null;
 }
+
+const TYPES: Record<string, DurationType> = {
+  whole: 'w', half: 'h', quarter: 'q', eighth: '8', '16th': '16', '32nd': '32',
+};
 
 export function parseMusicXml(xml: string): ImportResult {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -77,7 +83,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null, marks: newMarkState() }));
+      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null, marks: newMarkState(), tup: null }));
       return s;
     };
     let staffCount = 1;
@@ -150,7 +156,6 @@ export function parseMusicXml(xml: string): ImportResult {
             const pitchEl = kid(c, 'pitch');
             const tie = kids(c, 'tie').some((t) => t.getAttribute('type') === 'start')
               || Array.from(c.getElementsByTagName('tied')).some((t) => t.getAttribute('type') === 'start');
-            if (kid(c, 'time-modification')) warn.add('連符は近い長さの音符に置き換えました');
 
             if (isChord) {
               // 和音の2音目以降：直前の音に重ねる（時刻は進めない）
@@ -176,6 +181,7 @@ export function parseMusicXml(xml: string): ImportResult {
             };
             if (kid(c, 'unpitched')) ev.pitches = null;
             readNoteMarks(c, st.marks, ev, false);
+            readTuplet(c, st, ev);
             st.events.push(ev);
             st.last = ev;
             pos += dur;
@@ -253,6 +259,25 @@ export function parseMusicXml(xml: string): ImportResult {
   if (spanners.length) score.spanners = spanners;
   equalizeMeasureCounts(score);
   return { score, warnings: [...warn] };
+}
+
+/** <time-modification> と <tuplet> から、連符のまとまりを読む */
+function readTuplet(c: Element, st: StaffState, ev: TimedEvent) {
+  const tm = kid(c, 'time-modification');
+  const actual = Math.round(num(tm, 'actual-notes'));
+  const normal = Math.round(num(tm, 'normal-notes'));
+  const type = TYPES[txt(c, 'type')];
+  if (!tm || !type || actual < 1 || normal < 1) { st.tup = null; return; }
+  const dots = kids(c, 'dot').length;
+  const marks = Array.from(c.getElementsByTagName('tuplet')).map((t) => t.getAttribute('type'));
+  if (!st.tup || marks.includes('start') || st.tup.actual !== actual || st.tup.normal !== normal) {
+    const nt = TYPES[txt(tm, 'normal-type')];
+    const unit = nt ? ticksOf(nt, kids(tm, 'normal-dot').length) : ticksOf(type, dots);
+    st.tup = { key: uid(), actual, normal, filled: 0, full: unit * actual };
+  }
+  ev.tuplet = { key: st.tup.key, actual, normal, duration: type, dots };
+  st.tup.filled += ticksOf(type, dots);
+  if (marks.includes('stop') || st.tup.filled >= st.tup.full) st.tup = null;
 }
 
 function readPitch(el: Element): Pitch {

@@ -45,17 +45,23 @@ export function toMusicXml(score: Score): string {
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>`
           + `<per-minute>${tempo}</per-minute></metronome></direction-type><sound tempo="${tempo}"/></direction>`);
       }
-      for (const ev of m.events) {
+      m.events.forEach((ev, ei) => {
         const dur = eventTicks(ev);
-        const dots = '<dot/>'.repeat(ev.dots);
+        // 連符：<time-modification> と、頭と終わりに <tuplet>
+        const t = ev.tuplet;
+        const tupStart = !!t && m.events[ei - 1]?.tuplet?.id !== t.id;
+        const tupStop = !!t && m.events[ei + 1]?.tuplet?.id !== t.id;
+        const dots = '<dot/>'.repeat(ev.dots)
+          + (t ? `<time-modification><actual-notes>${t.actual}</actual-notes><normal-notes>${t.normal}</normal-notes></time-modification>` : '');
+        const tupXml = (tupStart ? '<tuplet type="start" bracket="yes"/>' : '') + (tupStop ? '<tuplet type="stop"/>' : '');
         out.push(...marks.before(ev));
         if (ev.kind === 'rest') {
-          const n = marks.notations(ev);
+          const n = marks.notations(ev) + tupXml;
           out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}`
             + `${n ? `<notations>${n}</notations>` : ''}</note>`);
           out.push(...marks.after(ev));
           tiedFromPrev = new Set();
-          continue;
+          return;
         }
         const next = new Set<string>();
         ev.pitches.forEach((p, k) => {
@@ -65,13 +71,13 @@ export function toMusicXml(score: Score): string {
           if (start) next.add(key);
           const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
           const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '')
-            + (k === 0 ? marks.notations(ev) : '');
+            + (k === 0 ? marks.notations(ev) + tupXml : '');
           out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>1</voice>`
             + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}</note>`);
         });
         out.push(...marks.after(ev));
         tiedFromPrev = next;
-      }
+      });
       out.push('</measure>');
     });
     out.push('</part>');

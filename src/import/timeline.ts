@@ -2,9 +2,19 @@
  * 「何ティック目から、どれだけの長さ、どの音」の並び（タイムライン）を、この楽譜の小節に詰め直す。
  * MusicXML の取り込みで使う。小節をまたぐ音はタイで分け、すき間は休符で埋める。
  */
-import { decompose } from '../model/duration';
+import { DurationType, decompose, ticksOf } from '../model/duration';
 import { Pitch } from '../model/pitch';
 import { EventMarks, Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+
+/** 連符の一員であること（同じ key の続いた音が1つの連符） */
+export interface TimedTuplet {
+  key: string;
+  actual: number;
+  normal: number;
+  /** 楽譜に書かれた音価 */
+  duration: DurationType;
+  dots: number;
+}
 
 export interface TimedEvent {
   /** 曲の頭からのティック */
@@ -18,6 +28,7 @@ export interface TimedEvent {
   marks?: EventMarks;
   /** 置いた結果：最初と最後のかけらの id（スラーなどをつなぐのに使う）。buildMeasures が書き込む */
   placed?: { first: string; last: string };
+  tuplet?: TimedTuplet;
 }
 
 /** 32分音符より細かい長さ（連符など）は近い32分音符の位置にそろえる */
@@ -32,18 +43,51 @@ export interface BuildResult {
   droppedOverlap: boolean;
 }
 
+const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+
+/** 連符としてそのまま置けるか（長さが整数ティックで、すき間なく続き、1小節に収まる） */
+function validTuplet(group: TimedEvent[], capacity: number): boolean {
+  const start = group[0].start;
+  if (!near(start, Math.round(start)) || (!near(start % GRID, 0) && !near(start % GRID, GRID))) return false;
+  let t = start;
+  for (const e of group) {
+    const tp = e.tuplet!;
+    const want = (ticksOf(tp.duration, tp.dots) * tp.normal) / tp.actual;
+    if (!Number.isInteger(want) || !near(e.ticks, want) || !near(e.start, t)) return false;
+    t += want;
+  }
+  const s = Math.round(start);
+  const end = Math.round(t);
+  return Math.floor(s / capacity) === Math.floor((end - 1) / capacity);
+}
+
 export function buildMeasures(events: TimedEvent[], capacity: number, minMeasures = 1): BuildResult {
   let quantized = false;
   let droppedOverlap = false;
-  const sorted = events
+
+  // 連符はまとめて1つの塊にする。置けない連符は、ばらして近い長さに丸める
+  const groups: TimedEvent[][] = [];
+  const singles: TimedEvent[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const key = events[i].tuplet?.key;
+    if (!key) { singles.push(events[i]); continue; }
+    let e = i + 1;
+    while (e < events.length && events[e].tuplet?.key === key) e++;
+    const g = events.slice(i, e);
+    if (validTuplet(g, capacity)) groups.push(g.map((x) => ({ ...x, start: Math.round(x.start), ticks: Math.round(x.ticks), orig: x })));
+    else singles.push(...g.map((x) => ({ ...x, tuplet: undefined })));
+    i = e - 1;
+  }
+
+  const snapped = singles
     .map((e) => {
       const start = snap(e.start);
       const end = snap(e.start + e.ticks);
       if (start !== e.start || end !== e.start + e.ticks) quantized = true;
       return { ...e, start, ticks: Math.max(end - start, e.pitches ? GRID : 0), orig: e };
     })
-    .filter((e) => e.ticks > 0)
-    .sort((a, b) => a.start - b.start);
+    .filter((e) => e.ticks > 0);
+  const sorted: (TimedEvent & { orig?: TimedEvent })[][] = [...snapped.map((e) => [e]), ...groups].sort((a, b) => a[0].start - b[0].start);
 
   const buckets: MusicEvent[][] = [];
   let cursor = 0;
@@ -75,7 +119,30 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
     }
   };
 
-  for (const e of sorted) {
+  for (const item of sorted) {
+    if (item[0].tuplet) {
+      const start = item[0].start;
+      if (start < cursor) {
+        // 前の音と重なっている連符は捨てる
+        droppedOverlap = true;
+        continue;
+      }
+      if (start > cursor) emit(start - cursor, null, false);
+      const id = uid();
+      for (const e of item) {
+        const tp = e.tuplet!;
+        const ev = e.pitches ? makeNote(e.pitches, tp.duration, tp.dots, e.tie) : makeRest(tp.duration, tp.dots);
+        ev.tuplet = { id, actual: tp.actual, normal: tp.normal };
+        const src = e.orig ?? e;
+        src.placed = { first: ev.id, last: ev.id };
+        if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
+        if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
+        (buckets[Math.floor(cursor / capacity)] ??= []).push(ev);
+        cursor += e.ticks;
+      }
+      continue;
+    }
+    const e = item[0];
     let { start, ticks } = e;
     if (start < cursor) {
       // 前の音と重なっている：重なった分は捨てる

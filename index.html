@@ -39,7 +39,7 @@
     <div id="score-wrap">
       <div id="score" class="score"></div>
     </div>
-    <p class="hint" id="hint" role="status"></p>
+    <p class="hint" id="hint" role="status" title="タップで閉じる"></p>
     <div class="zoom" aria-label="表示の大きさ">
       <button id="btn-zoom-out" class="zb" data-icon="zoomOut" title="縮小" aria-label="縮小"></button>
       <button id="zoom-label" class="zb label" title="100%に戻す">100%</button>
@@ -69,8 +69,8 @@
           <button id="btn-dot" class="tool" data-icon="dot" title="付点 (.)"><span>付点</span></button>
           <button id="btn-rest" class="tool" data-icon="rest" title="休符を入れる (0)"><span>休符</span></button>
           <button id="btn-tie" class="tool" data-icon="tie" title="タイ (T)。入力モードでは直前の音と同じ高さの音をタイでつないで足す"><span>タイ</span></button>
+          <button id="btn-tuplet" class="tool" data-icon="tuplet" title="連符（3連符など）。入力モードでは今の音価の長さで、選択モードでは選んだ音の長さで作る (Ctrl+3 など)" aria-haspopup="menu"><span>連符</span></button>
           <button id="btn-chord" class="tool" data-icon="chord" title="和音：入れる音を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音）"><span>和音</span></button>
-          <button id="btn-back" class="tool" data-icon="back" title="直前の操作を取り消す"><span>戻す</span></button>
         </div>
         <div class="group" aria-label="臨時記号">
           <button data-alter="1" class="tool acc" title="シャープ (+)"><b>♯</b><span>シャープ</span></button>
@@ -83,6 +83,12 @@
           <button id="btn-left" class="tool" data-icon="left" title="前の音と入れ替え"><span>前と</span></button>
           <button id="btn-right" class="tool" data-icon="right" title="次の音と入れ替え"><span>次と</span></button>
           <button id="btn-delete" class="tool danger" data-icon="trash" title="削除 (Delete)"><span>削除</span></button>
+        </div>
+        <div class="group" id="range-tools" aria-label="範囲とコピー">
+          <button id="btn-range" class="tool" data-icon="range" title="範囲選択：オンにすると、次にタップした音までを範囲にします（Shift+タップ、長押ししてなぞっても選べます）"><span>範囲</span></button>
+          <button id="btn-copy" class="tool" data-icon="copy" title="コピー (Ctrl+C)"><span>コピー</span></button>
+          <button id="btn-cut" class="tool" data-icon="cut" title="切り取り (Ctrl+X)"><span>切り取り</span></button>
+          <button id="btn-paste" class="tool" data-icon="paste" title="貼り付け (Ctrl+V)：選んだ音（入力モードでは入力位置）から上書きで貼ります"><span>貼り付け</span></button>
         </div>
         <div class="group">
           <button id="btn-tempo" class="tool" data-icon="tempo" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）"><span>テンポ</span></button>
@@ -103,8 +109,20 @@
     <button role="menuitem" id="btn-add-measure">小節を最後に追加</button>
     <button role="menuitem" id="btn-insert-measure">カーソルの前に小節を挿入</button>
     <button role="menuitem" id="btn-remove-measure" class="danger">カーソルのある小節を削除</button>
+    <button role="menuitem" id="btn-select-measure">カーソルのある小節を範囲選択</button>
+    <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
     <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
+  </div>
+
+  <div id="tuplet-menu" class="menu" role="menu" hidden>
+    <button role="menuitem" data-tuplet="3">3連符</button>
+    <button role="menuitem" data-tuplet="5">5連符</button>
+    <button role="menuitem" data-tuplet="6">6連符</button>
+    <button role="menuitem" data-tuplet="2">2連符（付点の音価で）</button>
+    <button role="menuitem" data-tuplet="4">4連符（付点の音価で）</button>
+    <hr />
+    <button role="menuitem" id="btn-remove-tuplet" class="danger">連符を外す</button>
   </div>
 
   <dialog id="dlg-list">
