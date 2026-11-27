@@ -78,6 +78,7 @@ button, select, input { font: inherit; color: inherit; }
   position: relative;
   background: var(--paper); margin: 0 auto; box-shadow: 0 1px 4px rgba(0,0,0,.12);
   border-radius: 4px; touch-action: pan-x pan-y;
+  -webkit-touch-callout: none; /* 長押しで範囲選択するので、iPadの長押しメニューを出さない */
 }
 .score svg { display: block; }
 .score.input-mode { cursor: crosshair; }

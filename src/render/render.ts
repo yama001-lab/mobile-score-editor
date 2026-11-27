@@ -15,6 +15,8 @@ export interface RenderOptions {
   scale?: number;
   selectedId?: string | null;
   selectedPitchIndex?: number;
+  /** 範囲選択に入っている音符・休符（範囲がなければ null） */
+  rangeIds?: Set<string> | null;
   cursor?: { partIndex: number; measureIndex: number; eventIndex: number } | null;
   /** タイトルを描くか（PDFでは日本語を画像で別に描くので false） */
   drawTitle?: boolean;
@@ -86,7 +88,8 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
   const ts = score.timeSignature;
   const accState = new Map<number, number>();
   const notes = events.map((ev) => {
-    const selected = ev.id === opts.selectedId;
+    const inRange = !!opts.rangeIds?.has(ev.id);
+    const selected = !inRange && ev.id === opts.selectedId;
     let note: StaveNote;
     if (ev.kind === 'rest') {
       const whole = events.length === 1;
@@ -120,6 +123,7 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
       }
     }
     if (ev.dots && !(ev.kind === 'rest' && events.length === 1)) Dot.buildAndAttach([note], { all: true });
+    if (inRange) note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     return note;
   });
@@ -349,6 +353,17 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
             if (next && next.kind === 'note') ties.push({ from: ev.id, to: next.id });
           }
         });
+
+        // 範囲選択の帯
+        const inRange = evHits.filter((h) => opts.rangeIds?.has(h.id));
+        if (inRange.length) {
+          const l = Math.max(inRange[0].left, inRange[0].x - 12);
+          const r = inRange[inRange.length - 1].right;
+          ctx.save();
+          ctx.setFillStyle('rgba(21,101,192,0.12)');
+          ctx.fillRect(l, hit.topLineY - 14, r - l, hit.lineSpacing * 4 + 28);
+          ctx.restore();
+        }
 
         // 入力位置（カーソル）
         const c = opts.cursor;
