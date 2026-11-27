@@ -101,6 +101,7 @@ function updatePalette() {
   const isNote = sel?.kind === 'note';
   $('#btn-dot').classList.toggle('on', editor.inputDots > 0);
   $('#btn-chord').classList.toggle('on', editor.chordMode);
+  $('#btn-tuplet').classList.toggle('on', editor.inTuplet);
   // 入力モードのタイは「直前の音とタイでつないで足す」なので、選択がなくても押せる
   $('#btn-tie').classList.toggle('on', !!(isNote && sel.tie));
   ($('#btn-tie') as HTMLButtonElement).disabled = !isNote && editor.mode !== 'input';
@@ -462,6 +463,32 @@ document.addEventListener('pointerdown', (e) => {
 }, { capture: true });
 measureMenu.addEventListener('click', () => closeMenu());
 on('#btn-add-measure', () => editor.addMeasure());
+
+// ---------- 連符メニュー ----------
+
+const tupletMenu = $('#tuplet-menu');
+function closeTupletMenu() { tupletMenu.hidden = true; }
+on('#btn-tuplet', () => {
+  if (!tupletMenu.hidden) { closeTupletMenu(); return; }
+  ($('#btn-remove-tuplet') as HTMLButtonElement).disabled = !editor.inTuplet;
+  tupletMenu.hidden = false;
+  const r = $('#btn-tuplet').getBoundingClientRect();
+  const m = tupletMenu.getBoundingClientRect();
+  tupletMenu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - m.width - 8)) + 'px';
+  tupletMenu.style.top = Math.max(8, r.top - m.height - 8) + 'px';
+});
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target as HTMLElement;
+  if (!tupletMenu.hidden && !t.closest('#tuplet-menu, #btn-tuplet')) closeTupletMenu();
+}, { capture: true });
+tupletMenu.addEventListener('click', () => closeTupletMenu());
+function makeTuplet(n: number) {
+  const err = editor.createTuplet(n);
+  if (err) toast(err);
+}
+document.querySelectorAll<HTMLButtonElement>('[data-tuplet]').forEach((b) =>
+  b.addEventListener('click', () => makeTuplet(Number(b.dataset.tuplet))));
+on('#btn-remove-tuplet', () => editor.removeTuplet());
 on('#btn-insert-measure', () => editor.addMeasure(editor.cursor.measureIndex - 1));
 on('#btn-remove-measure', () => editor.removeMeasure());
 on('#btn-meter', () => openSettings());
@@ -491,6 +518,8 @@ document.addEventListener('keydown', (e) => {
   if (mod && k.toLowerCase() === 'x') { e.preventDefault(); copyNow(true); return; }
   if (mod && k.toLowerCase() === 'v') { e.preventDefault(); pasteNow(); return; }
   if (mod && k.toLowerCase() === 'a') { e.preventDefault(); setMode('select'); editor.selectAll(); return; }
+  // Ctrl+2〜6：連符（MuseScore と同じ）
+  if (e.ctrlKey && /^[2-6]$/.test(k)) { e.preventDefault(); makeTuplet(Number(k)); return; }
   if (mod) return;
   if (k === ' ') { e.preventDefault(); togglePlay(); return; }
   if (/^[a-gA-G]$/.test(k)) {

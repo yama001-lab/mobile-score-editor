@@ -67,6 +67,14 @@
   - このアプリの PDF → 書き出し時に文書情報（Keywords）へ `MSE-SCORE1:` + base64 の楽譜JSONを入れてある（`embed.ts`）。それを取り出すだけ
   - ほかの PDF・写真 → `needs-omr` を返し、画面（`#dlg-import-help`）で Audiveris（パソコンの無料OMR）→ .mxl → 取り込み の手順を案内
 - MusicXML → Score は「曲頭からのティック付きの音の並び」（`timeline.ts`）を作ってから小節に詰め直す。
-  1段1声部、2段のパートは段ごとに別パート、拍子は最初のものだけ、連符は32分音符の格子に丸める。弱起は1小節目の後ろに寄せる
+  1段1声部、2段のパートは段ごとに別パート、拍子は最初のものだけ、連符は連符のまま取り込む（入れ子や7連符などティックが割り切れないものは32分音符の格子に丸める）。弱起は1小節目の後ろに寄せる
 - 逆向き（Score → MusicXML）は `src/export/musicxml.ts`。MuseScore などへ持っていける
 - ブラウザ内だけでの OMR（画像から直接読む）は未実装。やるなら `importBytes()` の `needs-omr` の所に差し込む
+
+### 連符
+- 音符・休符の `tuplet?: { id, actual, normal }`（3連符なら 3:2）。同じ `id` が小節内で続いた音が1つの連符。
+  `duration` は楽譜に書く音価のまま持ち、鳴る長さは `eventTicks()` が `normal/actual` 倍にする（`writtenTicks()` は縮めない長さ）
+- 作れる種類は `TUPLET_NORMAL`（2:3, 3:2, 4:3, 5:4, 6:4）。4分音符=480 で長さが整数になるものだけ。7連符などは未対応
+- `Editor.createTuplet(n)`：入力モードは今の音価の長さ、選択モードは選んだ音の長さで作る。カーソルが連符の中にある間の入力は
+  `overwriteInTuplet()` で連符の中だけを上書きする（はみ出さない）。連符にかかる普通の上書きは `overwriteAt()` が連符ごと消す
+- 描画は `render.ts` の `buildTuplets()`（VexFlow の `Tuplet`、Voice に入れる前に作る）と `tupletBeams()`

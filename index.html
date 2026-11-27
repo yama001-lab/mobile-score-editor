@@ -69,6 +69,7 @@
           <button id="btn-dot" class="tool" data-icon="dot" title="付点 (.)"><span>付点</span></button>
           <button id="btn-rest" class="tool" data-icon="rest" title="休符を入れる (0)"><span>休符</span></button>
           <button id="btn-tie" class="tool" data-icon="tie" title="タイ (T)。入力モードでは直前の音と同じ高さの音をタイでつないで足す"><span>タイ</span></button>
+          <button id="btn-tuplet" class="tool" data-icon="tuplet" title="連符（3連符など）。入力モードでは今の音価の長さで、選択モードでは選んだ音の長さで作る (Ctrl+3 など)" aria-haspopup="menu"><span>連符</span></button>
           <button id="btn-chord" class="tool" data-icon="chord" title="和音：入れる音を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音）"><span>和音</span></button>
         </div>
         <div class="group" aria-label="臨時記号">
@@ -112,6 +113,16 @@
     <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
     <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
+  </div>
+
+  <div id="tuplet-menu" class="menu" role="menu" hidden>
+    <button role="menuitem" data-tuplet="3">3連符</button>
+    <button role="menuitem" data-tuplet="5">5連符</button>
+    <button role="menuitem" data-tuplet="6">6連符</button>
+    <button role="menuitem" data-tuplet="2">2連符（付点の音価で）</button>
+    <button role="menuitem" data-tuplet="4">4連符（付点の音価で）</button>
+    <hr />
+    <button role="menuitem" id="btn-remove-tuplet" class="danger">連符を外す</button>
   </div>
 
   <dialog id="dlg-list">
