@@ -2,6 +2,7 @@
 import { PPQ } from '../model/duration';
 import { toMidi } from '../model/pitch';
 import { Instrument, Score, capacityAt, eventTicks, playOrder, tempoAt } from '../model/score';
+import { DynamicsTrack, fermataPauses, noteVelocity, shortenFor } from './expression';
 
 export interface ScheduledNote {
   /** 再生開始からの秒 */
@@ -10,6 +11,8 @@ export interface ScheduledNote {
   midi: number;
   instrument: Instrument;
   partIndex: number;
+  /** 強さ 0〜1.2 くらい（強弱記号・アクセントから）。省略時は既定の強さ */
+  velocity?: number;
 }
 
 /** 再生中の位置を楽譜上に示すための目印 */
@@ -45,19 +48,27 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
   const starts: number[] = [];
   const spts: number[] = [];
   let t = 0;
+  // フェルマータ：その音の終わりで、全パートそろって音の長さぶん待つ（リピートで同じ小節を弾くたびに待つ）
+  const pauses = fermataPauses(score, 0, (mi) => capacityAt(score, mi), (mi, ticks) => ticks * secondsPerTick(tempoAt(score, mi)));
+  const pauseBefore = (mi: number, tick: number) => {
+    let s = 0;
+    for (const p of pauses) if (p.measure === mi && p.tick <= tick) s += p.seconds;
+    return s;
+  };
   order.forEach((mi, k) => {
     starts[k] = t;
     spts[k] = secondsPerTick(tempoAt(score, mi));
-    t += capacityAt(score, mi) * spts[k];
+    t += capacityAt(score, mi) * spts[k] + pauseBefore(mi, Infinity);
   });
   const length = t;
-  const timeAt = (k: number, tick: number) => starts[k] + tick * spts[k];
+  const timeAt = (k: number, tick: number) => starts[k] + tick * spts[k] + pauseBefore(order[k], tick);
 
   const notes: ScheduledNote[] = [];
   const marks: ScheduledMark[] = [];
   score.parts.forEach((part, partIndex) => {
     // タイで次へ続く音（MIDI番号 → 鳴らしている音）
     let tied = new Map<number, ScheduledNote>();
+    const dyn = new DynamicsTrack(score, partIndex);
     order.forEach((mi, k) => {
       let tick = 0;
       part.measures[mi].events.forEach((ev, eventIndex) => {
@@ -66,13 +77,16 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
         const end = timeAt(k, tick + len);
         marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
         const next = new Map<number, ScheduledNote>();
+        const level = dyn.levelAt(ev);
         if (ev.kind === 'note') {
+          // スタッカートなどは鳴らす長さを縮める（タイの途中は縮めない）
+          const playEnd = ev.tie ? end : start + (end - start) * shortenFor(ev);
           for (const p of ev.pitches) {
             const midi = toMidi(p);
             let n = tied.get(midi);
-            if (n) n.duration = end - n.time;
+            if (n) n.duration = playEnd - n.time;
             else {
-              n = { time: start, duration: end - start, midi, instrument: part.instrument, partIndex };
+              n = { time: start, duration: playEnd - start, midi, instrument: part.instrument, partIndex, velocity: noteVelocity(ev, level) };
               notes.push(n);
             }
             if (ev.tie) next.set(midi, n);

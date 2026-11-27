@@ -2,8 +2,10 @@
 import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
 import {
-  Clef, Score, eventTicks, keyAt, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
+  Clef, MusicEvent, Score, eventTicks, keyAt, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
 } from '../model/score';
+import { parseChord, splitSyllable } from '../model/texts';
+import { MarksXml, marksXml } from './musicxml-marks';
 
 const TYPE_NAMES: Record<DurationType, string> = {
   w: 'whole', h: 'half', q: 'quarter', '8': 'eighth', '16': '16th', '32': '32nd',
@@ -14,6 +16,25 @@ const esc = (s: string) => s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt
 
 function pitchXml(p: Pitch): string {
   return `<pitch><step>${p.step}</step>${p.alter ? `<alter>${p.alter}</alter>` : ''}<octave>${p.octave}</octave></pitch>`;
+}
+
+/** コードネーム → <harmony>。読めない文字は <words> にする */
+function harmonyXml(raw: string): string {
+  const c = parseChord(raw);
+  if (!c) return `<direction placement="above"><direction-type><words>${esc(raw)}</words></direction-type></direction>`;
+  const alter = (a: number) => (a ? `<root-alter>${a}</root-alter>` : '');
+  return `<harmony><root><root-step>${c.root.step}</root-step>${alter(c.root.alter)}</root>`
+    + `<kind text="${esc(c.suffix)}">${c.kind}</kind>`
+    + (c.bass ? `<bass><bass-step>${c.bass.step}</bass-step>${c.bass.alter ? `<bass-alter>${c.bass.alter}</bass-alter>` : ''}</bass>` : '')
+    + '</harmony>';
+}
+
+/** 音符・休符の前に置く、コードネームと譜表の上の文字 */
+function textsBefore(ev: MusicEvent): string {
+  let x = '';
+  if (ev.text) x += `<direction placement="above"><direction-type><words>${esc(ev.text)}</words></direction-type></direction>`;
+  if (ev.chord) x += harmonyXml(ev.chord);
+  return x;
 }
 
 export function toMusicXml(score: Score): string {
@@ -29,9 +50,23 @@ export function toMusicXml(score: Score): string {
   score.parts.forEach((p, i) => out.push(`<score-part id="P${i + 1}"><part-name>${esc(p.name)}</part-name></score-part>`));
   out.push('</part-list>');
 
+  const marks: MarksXml = marksXml(score);
   score.parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
     let tiedFromPrev = new Set<string>();
+    /** 番ごとの、前の音節がハイフンでつながっているか */
+    const hyphenOpen: boolean[] = [];
+    const lyricsXml = (ev: MusicEvent): string => {
+      if (ev.kind !== 'note' || !ev.lyrics) return '';
+      return ev.lyrics.map((raw, v) => {
+        if (!raw) return '';
+        const { text, hyphen } = splitSyllable(raw);
+        const open = !!hyphenOpen[v];
+        hyphenOpen[v] = hyphen;
+        const syl = open ? (hyphen ? 'middle' : 'end') : hyphen ? 'begin' : 'single';
+        return `<lyric number="${v + 1}"><syllabic>${syl}</syllabic><text>${esc(text)}</text></lyric>`;
+      }).join('');
+    };
     part.measures.forEach((m, mi) => {
       // 弱起の小節は 0 番で、足りない長さの小節（implicit）として書く
       const pickup = !!score.pickup && mi === 0;
@@ -58,32 +93,50 @@ export function toMusicXml(score: Score): string {
           out.push(`<attributes>${kc !== null ? `<key><fifths>${kc}</fifths></key>` : ''}${tc ? timeXml : ''}</attributes>`);
         }
       }
+      if (pi === 0 && m.rehearsal) {
+        out.push(`<direction placement="above"><direction-type><rehearsal>${esc(m.rehearsal)}</rehearsal></direction-type></direction>`);
+      }
       const tempo = tempoMarkAt(score, mi);
       if (tempo !== null && pi === 0) {
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>`
           + `<per-minute>${tempo}</per-minute></metronome></direction-type><sound tempo="${tempo}"/></direction>`);
       }
-      for (const ev of m.events) {
+      m.events.forEach((ev, ei) => {
         const dur = eventTicks(ev);
-        const dots = '<dot/>'.repeat(ev.dots);
+        // 連符：<time-modification> と、頭と終わりに <tuplet>
+        const t = ev.tuplet;
+        const tupStart = !!t && m.events[ei - 1]?.tuplet?.id !== t.id;
+        const tupStop = !!t && m.events[ei + 1]?.tuplet?.id !== t.id;
+        const dots = '<dot/>'.repeat(ev.dots)
+          + (t ? `<time-modification><actual-notes>${t.actual}</actual-notes><normal-notes>${t.normal}</normal-notes></time-modification>` : '');
+        const tupXml = (tupStart ? '<tuplet type="start" bracket="yes"/>' : '') + (tupStop ? '<tuplet type="stop"/>' : '');
+        const before = textsBefore(ev);
+        if (before) out.push(before);
+        out.push(...marks.before(ev));
         if (ev.kind === 'rest') {
-          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}</note>`);
+          const n = marks.notations(ev) + tupXml;
+          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}`
+            + `${n ? `<notations>${n}</notations>` : ''}</note>`);
+          out.push(...marks.after(ev));
           tiedFromPrev = new Set();
-          continue;
+          return;
         }
         const next = new Set<string>();
+        const lyrics = lyricsXml(ev);
         ev.pitches.forEach((p, k) => {
           const key = `${p.step}${p.alter}${p.octave}`;
           const stop = tiedFromPrev.has(key);
           const start = !!ev.tie;
           if (start) next.add(key);
           const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
-          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '');
+          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '')
+            + (k === 0 ? marks.notations(ev) + tupXml : '');
           out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>1</voice>`
-            + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}</note>`);
+            + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}${k === 0 ? lyrics : ''}</note>`);
         });
+        out.push(...marks.after(ev));
         tiedFromPrev = next;
-      }
+      });
       if (attrs?.repeatEnd || voltaEnds) {
         const times = attrs?.repeatTimes ? ` times="${attrs.repeatTimes}"` : '';
         out.push(`<barline location="right">${attrs?.repeatEnd ? '<bar-style>light-heavy</bar-style>' : ''}`

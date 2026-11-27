@@ -2,6 +2,7 @@
 import { Score } from '../model/score';
 import { layoutSystems, paginate, renderPage } from '../render/render';
 import { encodeScore } from '../import/embed';
+import { TextItem, cssFont } from '../render/texts';
 
 const PAGE_W = 794; // A4 を 96dpi で表した幅
 const PAGE_H = 1123;
@@ -26,10 +27,28 @@ function titleImage(score: Score): string {
     g.textAlign = 'right';
     g.fillText(score.composer, PAGE_W - 24, TOP + 72);
   }
-  g.textAlign = 'left';
-  g.font = '12px serif';
-  g.fillText(`♩ = ${score.tempo}`, 24, TOP + 72);
   return canvas.toDataURL('image/png');
+}
+
+/** 文字1つを、透明な背景の画像にする（座標は楽譜の論理px） */
+function textImage(t: TextItem): { url: string; x: number; y: number; w: number; h: number } | null {
+  const scale = 4;
+  const canvas = document.createElement('canvas');
+  const g = canvas.getContext('2d');
+  if (!g) return null;
+  g.font = cssFont(t.font);
+  const pad = 2;
+  const w = Math.ceil(g.measureText(t.text).width) + pad * 2;
+  const ascent = t.font.size * 1.05;
+  const h = Math.ceil(t.font.size * 1.4) + pad * 2;
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  g.scale(scale, scale);
+  g.font = cssFont(t.font);
+  g.fillStyle = '#000';
+  g.textBaseline = 'alphabetic';
+  g.fillText(t.text, pad, pad + ascent);
+  return { url: canvas.toDataURL('image/png'), x: t.x - pad, y: t.y - ascent - pad, w, h };
 }
 
 export async function exportPdf(score: Score): Promise<void> {
@@ -45,9 +64,18 @@ export async function exportPdf(score: Score): Promise<void> {
       if (i > 0) doc.addPage();
       const div = document.createElement('div');
       holder.appendChild(div);
-      renderPage(div, score, pages[i], opts, i, TOP);
+      // 歌詞などの文字は日本語を含むので、SVG には描かずに集めて画像で載せる
+      const texts: TextItem[] = [];
+      renderPage(div, score, pages[i], { ...opts, textSink: (t) => texts.push(t) }, i, TOP);
       const svg = div.querySelector('svg')!;
+      ptFontSizesToPx(svg);
       await doc.svg(svg, { x: 0, y: 0, width: PT_W, height: PT_H });
+      for (const t of texts) {
+        const img = textImage(t);
+        if (!img) continue;
+        const k = PT_W / PAGE_W;
+        doc.addImage(img.url, 'PNG', img.x * k, img.y * k, img.w * k, img.h * k, undefined, 'FAST');
+      }
       if (i === 0) doc.addImage(titleImage(score), 'PNG', 0, 0, PT_W, (110 * PT_W) / PAGE_W, undefined, 'FAST');
       div.remove();
     }
@@ -58,6 +86,14 @@ export async function exportPdf(score: Score): Promise<void> {
   } finally {
     holder.remove();
   }
+}
+
+/** VexFlow は文字の大きさを "13pt" で書くが、svg2pdf.js は pt を読めず大きさ0になる（テンポや小節番号が消える）ので px に直す */
+function ptFontSizesToPx(svg: SVGSVGElement) {
+  svg.querySelectorAll<SVGElement>('[font-size]').forEach((el) => {
+    const m = /^([\d.]+)pt$/.exec(el.getAttribute('font-size') ?? '');
+    if (m) el.setAttribute('font-size', `${(Number(m[1]) * 4) / 3}px`);
+  });
 }
 
 function downloadBlob(blob: Blob, name: string) {
