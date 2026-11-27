@@ -119,13 +119,34 @@
       <h3>読み込み</h3>
       <div class="row">
         <label class="pb file-label">楽譜ファイル（.json）を開く<input type="file" id="file-import" accept=".json,application/json" hidden /></label>
-        <button type="button" id="btn-import-pdf" class="pb soon" title="PDFや写真の楽譜を読み取って取り込む（今後のステップで追加）">PDF・画像の楽譜を取り込む<small>準備中</small></button>
+        <label class="pb file-label" id="btn-import-pdf" title="このアプリのPDF、MusicXML（.musicxml / .mxl）を取り込む">PDF・MusicXMLを取り込む<input type="file" id="file-import-score" hidden /></label>
+        <button type="button" id="btn-import-help" class="pb">ほかのPDF・写真の楽譜は？</button>
       </div>
       <h3>書き出し</h3>
       <div class="row">
         <button type="button" id="btn-export-pdf" class="pb">PDFに書き出す</button>
         <button type="button" id="btn-export-json" class="pb">楽譜ファイル（.json）に保存</button>
+        <button type="button" id="btn-export-musicxml" class="pb">MusicXMLに書き出す</button>
       </div>
+      <div class="row end"><button class="pb">閉じる</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-import-help">
+    <form method="dialog" class="dlg">
+      <h2>PDF・写真の楽譜を取り込むには</h2>
+      <p id="import-help-reason" class="import-reason" hidden></p>
+      <h3>このアプリで書き出したPDF</h3>
+      <p>そのまま「PDF・MusicXMLを取り込む」で開けば、元の楽譜に戻ります（PDFに楽譜データが入っています）。</p>
+      <h3>ほかのPDF・写真・スキャン</h3>
+      <p>印刷された楽譜の読み取り（OMR）はiPadのブラウザだけでは精度が出ないため、パソコンの無料ソフト <b>Audiveris</b> で読み取ってから持ってきます。</p>
+      <ol class="import-steps">
+        <li>パソコンに <a href="https://github.com/Audiveris/audiveris/releases" target="_blank" rel="noopener">Audiveris</a> を入れる（Windows・Mac・Linux、無料）</li>
+        <li>Audiveris で PDF や写真を開き、「Book → Transcribe Book」で読み取る</li>
+        <li>間違いがあれば直し、「Book → Export Book As…」で <b>.mxl</b> を保存</li>
+        <li>.mxl を iCloud Drive などで iPad に送り、ここの「PDF・MusicXMLを取り込む」で開く</li>
+      </ol>
+      <p class="muted">MuseScore など楽譜ソフトのデータなら、そのソフトで「MusicXML」に書き出せばそのまま取り込めます。取り込めるのは1段につき1声部までで、連符・装飾音などは近い形に直します。</p>
       <div class="row end"><button class="pb">閉じる</button></div>
     </form>
   </dialog>

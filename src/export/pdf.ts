@@ -1,6 +1,7 @@
 /** PDF書き出し。楽譜はベクターのまま、日本語のタイトルは画像にして載せる（PDF標準フォントに日本語がないため）。 */
 import { Score } from '../model/score';
 import { layoutSystems, paginate, renderPage } from '../render/render';
+import { encodeScore } from '../import/embed';
 
 const PAGE_W = 794; // A4 を 96dpi で表した幅
 const PAGE_H = 1123;
@@ -50,6 +51,8 @@ export async function exportPdf(score: Score): Promise<void> {
       if (i === 0) doc.addImage(titleImage(score), 'PNG', 0, 0, PT_W, (110 * PT_W) / PAGE_W, undefined, 'FAST');
       div.remove();
     }
+    // 楽譜データを埋め込んでおき、このPDFを「取り込む」と元の楽譜に戻せるようにする
+    doc.setProperties({ creator: 'mobile-score-editor', keywords: encodeScore(score) });
     const name = (score.title || 'score').replace(/[\\/:*?"<>|]/g, '_') + '.pdf';
     downloadBlob(doc.output('blob'), name);
   } finally {
