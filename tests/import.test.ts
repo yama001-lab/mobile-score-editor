@@ -93,7 +93,10 @@ describe('MusicXML の取り込み', () => {
     expect(m0[m0.length - 1].kind === 'note' && m0[m0.length - 1]).toMatchObject({ duration: 'q', pitches: [{ step: 'G' }] });
     expect(m0[0].kind).toBe('rest');
     expect(score.parts[0].measures[1].events).toHaveLength(1);
-    expect(warnings.some((w) => w.includes('声部'))).toBe(true);
+    // 同じ段の2つ目の声部は声部2として残る
+    const v2 = score.parts[0].measures[1].voice2!;
+    expect(v2.map((e) => e.kind === 'note' && e.pitches[0].step)).toEqual(['E', 'D']);
+    expect(warnings.some((w) => w.includes('声部'))).toBe(false);
   });
 
   it('3連符は近い長さに丸めて小節を埋める', () => {

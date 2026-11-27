@@ -40,8 +40,17 @@ export type MusicEvent = NoteEvent | RestEvent;
 
 export interface Measure {
   id: string;
+  /** 声部1（符尾は上。声部2がなければふつうの向き） */
   events: MusicEvent[];
+  /**
+   * 声部2（符尾は下）。省略＝声部2なし。あるときは events と同じく小節をちょうど埋める。
+   * 古い保存データにはないので、読むときは voiceEvents() を使う。
+   */
+  voice2?: MusicEvent[];
 }
+
+/** 1段の中の声部の数（声部1・声部2） */
+export const VOICE_COUNT = 2;
 
 export interface Part {
   id: string;
@@ -146,6 +155,50 @@ export interface EventLocation {
   partIndex: number;
   measureIndex: number;
   eventIndex: number;
+  /** 0=声部1（省略時）、1=声部2 */
+  voice?: number;
+}
+
+/** 声部の音の並び。声部2がない小節では空の配列（読むだけ用） */
+export function voiceEvents(m: Measure, voice = 0): MusicEvent[] {
+  return voice ? (m.voice2 ?? []) : m.events;
+}
+
+/** 声部の音の並び。声部2がなければ休符で埋めて作る（書き換える前に使う） */
+export function ensureVoice(m: Measure, voice: number, capacity: number): MusicEvent[] {
+  if (!voice) return m.events;
+  return (m.voice2 ??= restsFor(capacity));
+}
+
+export function setVoiceEvents(m: Measure, voice: number, events: MusicEvent[]): void {
+  if (voice) m.voice2 = events;
+  else m.events = events;
+}
+
+/** 小節の全声部の音（声部1、声部2の順） */
+export function measureEvents(m: Measure): MusicEvent[] {
+  return m.voice2 ? [...m.events, ...m.voice2] : m.events;
+}
+
+/** 声部の中で tick の位置から始まる音の番号。休符の途中なら休符を分けてその位置を作る。 */
+export function splitRestAt(events: MusicEvent[], tick: number): number {
+  let t = 0;
+  for (let i = 0; i < events.length; i++) {
+    const len = eventTicks(events[i]);
+    if (t === tick) return i;
+    if (tick < t + len) {
+      if (events[i].kind !== 'rest') return i;
+      events.splice(i, 1, ...restsFor(tick - t), ...restsFor(t + len - tick));
+      return i + restsFor(tick - t).length;
+    }
+    t += len;
+  }
+  return Math.max(0, events.length - 1);
+}
+
+/** 声部の中の番号 index の音が始まるティック */
+export function tickOfIndex(events: MusicEvent[], index: number): number {
+  return events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0);
 }
 
 export function findEvent(score: Score, id: string): EventLocation | null {
@@ -154,18 +207,21 @@ export function findEvent(score: Score, id: string): EventLocation | null {
     for (let m = 0; m < ms.length; m++) {
       const e = ms[m].events.findIndex((ev) => ev.id === id);
       if (e >= 0) return { partIndex: p, measureIndex: m, eventIndex: e };
+      const e2 = ms[m].voice2?.findIndex((ev) => ev.id === id) ?? -1;
+      if (e2 >= 0) return { partIndex: p, measureIndex: m, eventIndex: e2, voice: 1 };
     }
   }
   return null;
 }
 
 export function eventAt(score: Score, loc: EventLocation): MusicEvent | undefined {
-  return score.parts[loc.partIndex]?.measures[loc.measureIndex]?.events[loc.eventIndex];
+  const m = score.parts[loc.partIndex]?.measures[loc.measureIndex];
+  return m ? voiceEvents(m, loc.voice)[loc.eventIndex] : undefined;
 }
 
-/** 小節内の index の位置から ev を上書きで置く。後ろの音は削られ、余りは休符になる。 */
-export function overwriteAt(m: Measure, index: number, ev: MusicEvent): void {
-  const events = m.events;
+/** 小節内の index の位置から ev を上書きで置く。後ろの音は削られ、余りは休符になる。voice=1 なら声部2に置く */
+export function overwriteAt(m: Measure, index: number, ev: MusicEvent, voice = 0): void {
+  const events = voiceEvents(m, voice);
   const end = events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0) + eventTicks(ev);
   let t = events.slice(0, index).reduce((s, e) => s + eventTicks(e), 0);
   let i = index;
@@ -174,29 +230,48 @@ export function overwriteAt(m: Measure, index: number, ev: MusicEvent): void {
     i++;
   }
   const filler = t > end ? restsFor(t - end) : [];
-  m.events = [...events.slice(0, index), ev, ...filler, ...events.slice(i)];
+  setVoiceEvents(m, voice, [...events.slice(0, index), ev, ...filler, ...events.slice(i)]);
 }
 
-/** 休符だけの小節は1つの休符にまとめる。 */
+/** 休符だけの小節は1つの休符にまとめる。声部2が休符だけになったら声部2ごと消す。 */
 export function normalizeMeasure(m: Measure, capacity: number): void {
   if (m.events.every((e) => e.kind === 'rest')) {
     const total = Math.max(measureTicks(m), capacity);
     m.events = restsFor(total);
   }
+  if (m.voice2 && m.voice2.every((e) => e.kind === 'rest')) delete m.voice2;
 }
 
-/** 拍子が変わったとき、パートの音を新しい小節の長さに流し直す。小節をまたぐ音はタイで分ける。 */
+/** 拍子が変わったとき、パートの音を新しい小節の長さに流し直す。小節をまたぐ音はタイで分ける。声部ごとに流す。 */
 export function reflowPart(part: Part, capacity: number): void {
-  const all = part.measures.flatMap((m) => m.events);
-  const measures: Measure[] = [];
-  let cur: Measure = { id: uid(), events: [] };
+  const oldCap = part.measures.length ? Math.max(...part.measures.map((m) => measureTicks(m))) : capacity;
+  const v1 = reflowEvents(part.measures.flatMap((m) => m.events), capacity);
+  const hasV2 = part.measures.some((m) => m.voice2);
+  const v2 = hasV2
+    ? reflowEvents(part.measures.flatMap((m) => m.voice2 ?? restsFor(oldCap)), capacity)
+    : [];
+  while (v1.length < v2.length) v1.push(restsFor(capacity));
+  const measures: Measure[] = v1.map((events, i) => {
+    const m: Measure = { id: uid(), events };
+    if (v2[i]) m.voice2 = v2[i];
+    return m;
+  });
+  if (!measures.length) measures.push(createMeasure(capacity));
+  measures.forEach((m) => normalizeMeasure(m, capacity));
+  part.measures = measures;
+}
+
+/** 音の並びを、長さ capacity の小節ごとの並びに分ける */
+function reflowEvents(all: MusicEvent[], capacity: number): MusicEvent[][] {
+  const measures: MusicEvent[][] = [];
+  let cur: MusicEvent[] = [];
   let used = 0;
   const push = (ev: MusicEvent) => {
-    cur.events.push(ev);
+    cur.push(ev);
     used += eventTicks(ev);
     if (used >= capacity) {
       measures.push(cur);
-      cur = { id: uid(), events: [] };
+      cur = [];
       used = 0;
     }
   };
@@ -220,13 +295,11 @@ export function reflowPart(part: Part, capacity: number): void {
       first = false;
     }
   }
-  if (cur.events.length) {
-    cur.events.push(...restsFor(capacity - used));
+  if (cur.length) {
+    cur.push(...restsFor(capacity - used));
     measures.push(cur);
   }
-  if (!measures.length) measures.push(createMeasure(capacity));
-  measures.forEach((m) => normalizeMeasure(m, capacity));
-  part.measures = measures;
+  return measures;
 }
 
 /** その小節で有効なテンポ */

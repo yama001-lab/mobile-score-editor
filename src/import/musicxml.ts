@@ -3,7 +3,7 @@
  * Audiveris などの楽譜読み取り（OMR）ソフトや MuseScore の書き出しを、この形で受け取る。
  *
  * この楽譜の形に合わせて単純化する:
- * - 1つの段（staff）につき声部は1つ（最初に出てきた声部）。ほかの声部は捨てる
+ * - 1つの段（staff）につき声部は2つまで（最初に出てきた声部を声部1、次を声部2）。3つ目からは捨てる
  * - ピアノなど2段のパートは、段ごとに別のパートにする
  * - 拍子は最初のものだけ（途中で変わったら、最初の拍子で小節を引き直す）
  * - 連符・装飾音は近い長さに丸める／捨てる
@@ -11,7 +11,8 @@
 import { PPQ } from '../model/duration';
 import { Pitch, STEPS, Step } from '../model/pitch';
 import {
-  Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, equalizeMeasureCounts, measureCapacity, uid,
+  Clef, Part, SCHEMA_VERSION, Score, TempoMark, TimeSignature, VOICE_COUNT, equalizeMeasureCounts, measureCapacity,
+  normalizeMeasure, uid,
 } from '../model/score';
 import { TimedEvent, buildMeasures } from './timeline';
 
@@ -38,12 +39,16 @@ function clefOf(el: Element): Clef {
   return 'treble';
 }
 
-interface StaffState {
+interface VoiceState {
   events: TimedEvent[];
-  voice: string | null;
-  clef: Clef | null;
   /** 和音の続きを足すために、直前に置いた音 */
   last: TimedEvent | null;
+}
+
+interface StaffState {
+  /** MusicXML の声部番号 → この楽譜の声部（出てきた順。2つまで） */
+  voices: Map<string, VoiceState>;
+  clef: Clef | null;
 }
 
 export function parseMusicXml(xml: string): ImportResult {
@@ -74,7 +79,7 @@ export function parseMusicXml(xml: string): ImportResult {
     const staves = new Map<number, StaffState>();
     const staffOf = (n: number) => {
       let s = staves.get(n);
-      if (!s) staves.set(n, (s = { events: [], voice: null, clef: null, last: null }));
+      if (!s) staves.set(n, (s = { voices: new Map(), clef: null }));
       return s;
     };
     let staffCount = 1;
@@ -145,21 +150,23 @@ export function parseMusicXml(xml: string): ImportResult {
               || Array.from(c.getElementsByTagName('tied')).some((t) => t.getAttribute('type') === 'start');
             if (kid(c, 'time-modification')) warn.add('連符は近い長さの音符に置き換えました');
 
+            const vs = st.voices.get(voice);
             if (isChord) {
               // 和音の2音目以降：直前の音に重ねる（時刻は進めない）
-              if (pitchEl && st.voice === voice && st.last?.pitches) {
-                st.last.pitches.push(readPitch(pitchEl));
-                if (tie) st.last.tie = true;
+              if (pitchEl && vs?.last?.pitches) {
+                vs.last.pitches.push(readPitch(pitchEl));
+                if (tie) vs.last.tie = true;
               }
               break;
             }
-            st.voice ??= voice;
-            if (voice !== st.voice) {
-              warn.add('1つの段に複数の声部がある所は、最初の声部だけを取り込みました');
+            if (!vs && st.voices.size >= VOICE_COUNT) {
+              warn.add('1つの段に3つ以上の声部がある所は、最初の2つの声部だけを取り込みました');
               pos += dur;
               maxPos = Math.max(maxPos, pos);
               break;
             }
+            const target = vs ?? { events: [], last: null };
+            if (!vs) st.voices.set(voice, target);
             const ev: TimedEvent = {
               start: measureStart + pos,
               ticks: dur,
@@ -167,8 +174,8 @@ export function parseMusicXml(xml: string): ImportResult {
               tie: !!pitchEl && tie,
             };
             if (kid(c, 'unpitched')) ev.pitches = null;
-            st.events.push(ev);
-            st.last = ev;
+            target.events.push(ev);
+            target.last = ev;
             pos += dur;
             break;
           }
@@ -201,16 +208,29 @@ export function parseMusicXml(xml: string): ImportResult {
   let dropped = false;
 
   const parts: Part[] = outParts.map(({ name, staff }, i) => {
-    const events = staff.events.map((e) => ({ ...e, start: e.start + pickup }));
-    const built = buildMeasures(events, cap);
-    quantized ||= built.quantized;
-    dropped ||= built.droppedOverlap;
+    const lists = [...staff.voices.values()].map((v) => v.events.map((e) => ({ ...e, start: e.start + pickup })));
+    if (!lists.length) lists.push([]);
+    const first = buildMeasures(lists[0], cap);
+    const second = lists[1] ? buildMeasures(lists[1], cap, first.measures.length) : null;
+    let measures = first.measures;
+    if (second && second.measures.length > measures.length) measures = buildMeasures(lists[0], cap, second.measures.length).measures;
+    for (const b of second ? [first, second] : [first]) {
+      quantized ||= b.quantized;
+      dropped ||= b.droppedOverlap;
+    }
+    if (second) {
+      measures.forEach((m, k) => {
+        const v2 = second.measures[k]?.events;
+        if (v2) m.voice2 = v2;
+        normalizeMeasure(m, cap);
+      });
+    }
     return {
       id: uid(),
       name,
       clef: staff.clef ?? (i > 0 && outParts.length === 2 ? 'bass' : 'treble'),
       instrument: 'piano',
-      measures: built.measures,
+      measures,
     };
   });
   if (quantized) warn.add('細かいリズム（連符など）は近い長さに丸めました');

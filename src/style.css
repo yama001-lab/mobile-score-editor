@@ -109,6 +109,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .dlg h2 { margin: 0; font-size: 19px; }
 .dlg h3 { margin: 6px 0 0; font-size: 15px; }
 .dlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.dlg label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 15px; color: inherit; }
 .dlg .row label { flex-direction: row; align-items: center; gap: 6px; }
 .dlg input, .dlg select { font-size: 16px; padding: 8px; border: 1px solid var(--btn-border); border-radius: 8px; color: var(--ink); background: #fff; -webkit-user-select: text; user-select: text; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -176,6 +177,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .tool.danger { color: var(--danger); }
 .tool.acc b { font-size: 21px; line-height: 24px; font-weight: 400; }
 .tool.acc span { font-size: 9.5px; }
+.tool.voice2.on { background: #e8f5e9; border-color: #2e7d32; color: #2e7d32; }
 #btn-keyboard { border: 1px solid var(--btn-border); background: #fff; min-width: 52px; }
 #btn-keyboard.on { background: var(--accent-soft); border-color: var(--accent); }
 /* ポップアップのメニュー */
@@ -245,3 +247,4 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .pen-layer.finger-draws { touch-action: none; }
 .score.pen-mode { box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 4px rgba(0,0,0,.12); }
 .pen-guide { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }
+.dlg [hidden] { display: none !important; }

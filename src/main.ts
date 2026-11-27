@@ -7,7 +7,8 @@ import { Player } from './audio/player';
 import { ScheduledMark } from './audio/schedule';
 import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
-import { MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
+import { EventHit, MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
+import { setupTranspose } from './ui/transpose';
 import { applyIcons, ICONS, setIcon } from './ui/icons';
 import { PenLayer } from './handwriting/pen';
 import { applyRecognized, staffOf } from './handwriting/apply';
@@ -98,6 +99,8 @@ function updatePalette() {
     b.classList.toggle('on', b.dataset.duration === editor.inputDuration));
   const sel = editor.selected;
   const isNote = sel?.kind === 'note';
+  document.querySelectorAll<HTMLButtonElement>('[data-voice]').forEach((b) =>
+    b.classList.toggle('on', Number(b.dataset.voice) === editor.voice));
   $('#btn-dot').classList.toggle('on', editor.inputDots > 0);
   $('#btn-chord').classList.toggle('on', editor.chordMode);
   // 入力モードのタイは「直前の音とタイでつないで足す」なので、選択がなくても押せる
@@ -115,13 +118,15 @@ function updatePalette() {
   $('#btn-finger').classList.toggle('on', penLayer.fingerDraws);
   const title = $<HTMLInputElement>('#title');
   if (document.activeElement !== title) title.value = editor.score.title;
-  const hintKey = `${editor.mode}:${panelShown()}`;
+  const hintKey = `${editor.mode}:${panelShown()}:${editor.voice}`;
   if (hintKey !== lastHintKey) {
     lastHintKey = hintKey;
     showHint(editor.mode === 'pen'
       ? '手書き：五線に音符を書くと、少し待って音符に変わります。白丸＝全、白丸＋棒＝2分、黒丸＋棒＝4分、旗で8分・16分。こすると消えます。2本指でスクロール'
       : editor.mode === 'input'
-      ? (panelShown()
+      ? (editor.voice
+        ? '声部2：符尾が下の音を、緑の帯の位置に入れます。声部1に戻すには「声部1」'
+        : panelShown()
         ? '入力：鍵盤を押すと青い帯の位置に入ります。押さえたまま別の鍵で和音。五線のタップでも入ります'
         : '入力：五線をタップすると、その高さの音符が入ります')
       : '選択：音符をタップして選び、上下にドラッグで高さを変えます');
@@ -193,6 +198,30 @@ function eventIndexAt(h: MeasureHit, x: number) {
   return i >= 0 ? i : h.events.length - 1;
 }
 
+/** 声部をまたいで、タップした位置の音符・休符（横の範囲に入るもののうち、頭がいちばん近いもの） */
+function pickEvent(h: MeasureHit, x: number, y: number): EventHit | null {
+  let best: EventHit | null = null;
+  let bd = Infinity;
+  for (const list of h.voices) {
+    for (const e of list) {
+      if (x < e.left || x >= e.right) continue;
+      const d = Math.min(...e.headYs.map((hy) => Math.abs(hy - y)));
+      if (d < bd) { bd = d; best = e; }
+    }
+  }
+  return best ?? h.events[eventIndexAt(h, x)] ?? null;
+}
+
+/** 声部2に入れるときの位置：タップより左で、どちらかの声部の音が始まるいちばん近い拍 */
+function tickAt(h: MeasureHit, x: number): number {
+  let best: EventHit | null = null;
+  for (const e of h.voices.flat()) {
+    if (e.x > x + 12) continue;
+    if (!best || e.x > best.x) best = e;
+  }
+  return best?.tick ?? 0;
+}
+
 let drag: { pointerId: number; startY: number; moved: boolean; onSelected: boolean; hit: MeasureHit } | null = null;
 
 scoreEl.addEventListener('pointerdown', (ev) => {
@@ -236,7 +265,21 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
   const { x, y } = localPoint(ev);
   const h = hitAt(x, y) ?? d.hit;
   const idx = eventIndexAt(h, x);
-  if (editor.mode === 'input') {
+  if (editor.mode === 'input' && editor.voice) {
+    // 声部2：タップした拍の位置に入れる（和音モードなら声部2の音符に重ねる）
+    const pos = diatonicAtY(h, y);
+    const tapped = pickEvent(h, x, y);
+    const tappedEv = tapped && tapped.voice === editor.voice
+      ? editor.score.parts[h.partIndex].measures[h.measureIndex].voice2?.[tapped.eventIndex] : undefined;
+    if ((editor.chordMode || ev.shiftKey) && tapped && tappedEv?.kind === 'note') {
+      editor.select(tapped.id);
+      editor.inputDiatonic(pos, null, true);
+    } else {
+      editor.setCursorAtTick(h.partIndex, h.measureIndex, editor.voice, tickAt(h, x));
+      editor.inputDiatonic(pos);
+    }
+    previewSelected(pos);
+  } else if (editor.mode === 'input') {
     const pos = diatonicAtY(h, y);
     const tapped = h.events[idx];
     const tappedNote = tapped && editor.score.parts[h.partIndex].measures[h.measureIndex].events[idx]?.kind === 'note';
@@ -260,7 +303,7 @@ function endPointer(ev: PointerEvent, cancelled: boolean) {
     } else editor.inputDiatonic(pos);
     previewSelected(pos);
   } else {
-    const e = h.events[idx];
+    const e = pickEvent(h, x, y);
     if (!e) return;
     let pi = 0;
     if (e.headYs.length > 1) {
@@ -322,6 +365,11 @@ function handleInk(strokes: Stroke[]) {
 }
 document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) =>
   b.addEventListener('click', () => editor.setSelectedAccidental(Number(b.dataset.alter))));
+document.querySelectorAll<HTMLButtonElement>('[data-voice]').forEach((b) =>
+  b.addEventListener('click', () => {
+    if (editor.mode === 'select') setMode('input');
+    editor.setVoice(Number(b.dataset.voice));
+  }));
 on('#btn-dot', () => editor.toggleDot());
 on('#btn-rest', () => editor.inputRest());
 on('#btn-tie', () => { editor.toggleTie(); previewSelected(); });
@@ -842,6 +890,10 @@ dlgTempo.addEventListener('close', () => {
   if (tempoMeasure > 0 && Math.round(v) === tempoAt(editor.score, tempoMeasure - 1)) editor.removeTempo(tempoMeasure);
   else editor.setTempo(tempoMeasure, v);
 });
+
+// ---------- 移調 ----------
+
+setupTranspose(editor, $('#btn-transpose'), $<HTMLDialogElement>('#dlg-transpose'));
 
 // ---------- チューニング ----------
 

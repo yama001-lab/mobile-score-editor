@@ -1,7 +1,7 @@
 /** Score → MusicXML（score-partwise 3.1）。MuseScore などほかの楽譜ソフトへ持っていくため。 */
 import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { Clef, Score, eventTicks, tempoMarkAt } from '../model/score';
+import { Clef, Score, eventTicks, measureTicks, tempoMarkAt } from '../model/score';
 
 const TYPE_NAMES: Record<DurationType, string> = {
   w: 'whole', h: 'half', q: 'quarter', '8': 'eighth', '16': '16th', '32': '32nd',
@@ -29,7 +29,8 @@ export function toMusicXml(score: Score): string {
 
   score.parts.forEach((part, pi) => {
     out.push(`<part id="P${pi + 1}">`);
-    let tiedFromPrev = new Set<string>();
+    // 声部ごとの「前の音からタイが続いている音」
+    const tiedFrom: Set<string>[] = [new Set(), new Set()];
     part.measures.forEach((m, mi) => {
       out.push(`<measure number="${mi + 1}">`);
       if (mi === 0) {
@@ -43,27 +44,37 @@ export function toMusicXml(score: Score): string {
         out.push(`<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>`
           + `<per-minute>${tempo}</per-minute></metronome></direction-type><sound tempo="${tempo}"/></direction>`);
       }
-      for (const ev of m.events) {
-        const dur = eventTicks(ev);
-        const dots = '<dot/>'.repeat(ev.dots);
-        if (ev.kind === 'rest') {
-          out.push(`<note><rest/><duration>${dur}</duration><voice>1</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}</note>`);
-          tiedFromPrev = new Set();
-          continue;
+      const voices = m.voice2 ? [m.events, m.voice2] : [m.events];
+      voices.forEach((events, v) => {
+        if (v > 0) out.push(`<backup><duration>${measureTicks(m)}</duration></backup>`);
+        const voiceNo = v + 1;
+        // 声部2がある小節では、声部1の符尾は上、声部2は下
+        const stem = voices.length > 1 ? `<stem>${v === 0 ? 'up' : 'down'}</stem>` : '';
+        let tiedFromPrev = tiedFrom[v];
+        for (const ev of events) {
+          const dur = eventTicks(ev);
+          const dots = '<dot/>'.repeat(ev.dots);
+          if (ev.kind === 'rest') {
+            out.push(`<note><rest/><duration>${dur}</duration><voice>${voiceNo}</voice><type>${TYPE_NAMES[ev.duration]}</type>${dots}</note>`);
+            tiedFromPrev = new Set();
+            continue;
+          }
+          const next = new Set<string>();
+          ev.pitches.forEach((p, k) => {
+            const key = `${p.step}${p.alter}${p.octave}`;
+            const stop = tiedFromPrev.has(key);
+            const start = !!ev.tie;
+            if (start) next.add(key);
+            const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
+            const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '');
+            out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>${voiceNo}</voice>`
+              + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${stem}${tied ? `<notations>${tied}</notations>` : ''}</note>`);
+          });
+          tiedFromPrev = next;
         }
-        const next = new Set<string>();
-        ev.pitches.forEach((p, k) => {
-          const key = `${p.step}${p.alter}${p.octave}`;
-          const stop = tiedFromPrev.has(key);
-          const start = !!ev.tie;
-          if (start) next.add(key);
-          const ties = (stop ? '<tie type="stop"/>' : '') + (start ? '<tie type="start"/>' : '');
-          const tied = (stop ? '<tied type="stop"/>' : '') + (start ? '<tied type="start"/>' : '');
-          out.push(`<note>${k > 0 ? '<chord/>' : ''}${pitchXml(p)}<duration>${dur}</duration>${ties}<voice>1</voice>`
-            + `<type>${TYPE_NAMES[ev.duration]}</type>${dots}${tied ? `<notations>${tied}</notations>` : ''}</note>`);
-        });
-        tiedFromPrev = next;
-      }
+        tiedFrom[v] = tiedFromPrev;
+      });
+      if (!m.voice2) tiedFrom[1] = new Set();
       out.push('</measure>');
     });
     out.push('</part>');

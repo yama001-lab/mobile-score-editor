@@ -1,7 +1,7 @@
 /** 楽譜を「いつ・どの高さを・どれだけ鳴らすか」の一覧にする。音は出さないので単体テストできる。 */
 import { PPQ } from '../model/duration';
 import { toMidi } from '../model/pitch';
-import { Instrument, Score, eventTicks, measureCapacity, tempoAt } from '../model/score';
+import { Instrument, Score, VOICE_COUNT, eventTicks, measureCapacity, tempoAt, voiceEvents } from '../model/score';
 
 export interface ScheduledNote {
   /** 再生開始からの秒 */
@@ -53,31 +53,37 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
   const notes: ScheduledNote[] = [];
   const marks: ScheduledMark[] = [];
   score.parts.forEach((part, partIndex) => {
-    // タイで次へ続く音（MIDI番号 → 鳴らしている音）
-    let tied = new Map<number, ScheduledNote>();
-    for (let mi = fromMeasure; mi < count; mi++) {
-      let tick = 0;
-      part.measures[mi].events.forEach((ev, eventIndex) => {
-        const len = eventTicks(ev);
-        const start = timeAt(mi, tick);
-        const end = timeAt(mi, tick + len);
-        marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
-        const next = new Map<number, ScheduledNote>();
-        if (ev.kind === 'note') {
-          for (const p of ev.pitches) {
-            const midi = toMidi(p);
-            let n = tied.get(midi);
-            if (n) n.duration = end - n.time;
-            else {
-              n = { time: start, duration: end - start, midi, instrument: part.instrument, partIndex };
-              notes.push(n);
+    // 声部ごとに。目印（再生位置）は声部1だけ
+    for (let voice = 0; voice < VOICE_COUNT; voice++) {
+      if (voice && !part.measures.some((m) => m.voice2)) continue;
+      // タイで次へ続く音（MIDI番号 → 鳴らしている音）
+      let tied = new Map<number, ScheduledNote>();
+      for (let mi = fromMeasure; mi < count; mi++) {
+        let tick = 0;
+        voiceEvents(part.measures[mi], voice).forEach((ev, eventIndex) => {
+          const len = eventTicks(ev);
+          const start = timeAt(mi, tick);
+          const end = timeAt(mi, tick + len);
+          if (!voice) marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
+          const next = new Map<number, ScheduledNote>();
+          if (ev.kind === 'note') {
+            for (const p of ev.pitches) {
+              const midi = toMidi(p);
+              let n = tied.get(midi);
+              if (n) n.duration = end - n.time;
+              else {
+                n = { time: start, duration: end - start, midi, instrument: part.instrument, partIndex };
+                notes.push(n);
+              }
+              if (ev.tie) next.set(midi, n);
             }
-            if (ev.tie) next.set(midi, n);
           }
-        }
-        tied = next;
-        tick += len;
-      });
+          tied = next;
+          tick += len;
+        });
+        // 声部2のない小節ではタイは切れる
+        if (voice && !part.measures[mi].voice2) tied = new Map();
+      }
     }
   });
   notes.sort((a, b) => a.time - b.time);

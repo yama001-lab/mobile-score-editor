@@ -18,6 +18,10 @@
 - 長さはティック（4分音符 = 480、MIDIと同じ）
 - 音高は `{ step, alter, octave }`。`toMidi()` / `fromMidi()` で MIDI 番号と変換
 - 全パートの小節数は常に同じ。小節はいつも音符と休符でちょうど埋まっている
+- 1段に声部は2つまで。`Measure.events` が声部1、省略できる `Measure.voice2` が声部2（どちらも小節をちょうど埋める）。
+  声部2が休符だけになったら `normalizeMeasure()` が消すので、古いデータ・声部2のない小節は今までと同じ形。
+  声部を問わず読むときは `voiceEvents(m, voice)`（なければ空）、書き換える前は `ensureVoice()`、全声部をなめるときは `measureEvents(m)`。
+  `EventLocation` / `Cursor` の `voice`（省略=0）で声部を指す。音符に新しい情報を足す機能（連符・歌詞など）も、声部2の音に同じように付く
 
 ## 画面の配置
 
@@ -60,3 +64,15 @@
   1段1声部、2段のパートは段ごとに別パート、拍子は最初のものだけ、連符は32分音符の格子に丸める。弱起は1小節目の後ろに寄せる
 - 逆向き（Score → MusicXML）は `src/export/musicxml.ts`。MuseScore などへ持っていける
 - ブラウザ内だけでの OMR（画像から直接読む）は未実装。やるなら `importBytes()` の `needs-omr` の所に差し込む
+
+## 2声部と移調
+
+- 声部の切り替えは `editor.setVoice()`。カーソルは同じ拍の位置のまま移る。声部2の休符の途中は `setCursorAtTick()` が休符を分けて位置を作る
+  （音は変わらないので元に戻すには残さない）。声部2の音符を選ぶと、入力も声部2になる
+- 描画（`render.ts`）は声部2のある小節だけ、声部1の符尾を上・声部2を下にし、休符も上下に離す。臨時記号は声部をまたいで時間順に判定。
+  `MeasureHit.voices[v]` に声部ごとの当たり判定（`tick` 付き）。`events` は声部1のまま
+- 再生は両方の声部を鳴らす（再生位置の目印は声部1）。MusicXML は `<backup>` と `<voice>2</voice>` で書き出し、取り込みは段ごとに最初の2声部まで
+- 手書き入力は今は声部1だけ
+- 移調は `src/model/transpose.ts`。音程は `{ steps（白鍵の数）, semitones }` で、綴りまで正しく動かす。
+  `editor.transpose(interval, scope)`：楽譜全体なら調号も変え（7つを超えたら異名同音の調）、譜表・音符だけなら臨時記号で書く。
+  範囲選択を足すときは `editor.selectionIds()` を広げれば移調も対応する。画面は `src/ui/transpose.ts`（#dlg-transpose）

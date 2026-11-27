@@ -48,6 +48,7 @@ export const ICONS = {
   tempo: svg(head(true, 7, 17.5) + '<path d="M10.4 16.6V4.5"/><path d="M14 11h6M14 15h6"/>'),
   finger: svg('<path d="M9 11V5a1.5 1.5 0 0 1 3 0v5.5"/><path d="M12 10V8.5a1.5 1.5 0 0 1 3 0V11"/><path d="M15 10.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-.5a6 6 0 0 1-4.8-2.4L4.3 15.5a1.5 1.5 0 0 1 2.3-1.9L9 16"/>'),
   help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><circle cx="12" cy="17" r=".6" fill="currentColor"/>'),
+  transpose: svg(head(true, 7.5, 17.5) + '<path d="M10.9 16.6V5"/><path d="M17 4v8M14.5 6.5L17 4l2.5 2.5M17 20v-5M14.5 17.5L17 20l2.5-2.5"/>'),
   importPdf: svg('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M12 10v7M9 14l3 3 3-3"/>'),
 } as const;
 
