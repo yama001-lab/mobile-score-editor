@@ -11,6 +11,9 @@ import {
   eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
   TimeSignature,
 } from '../model/score';
+import {
+  Clip, RangeSel, clearRange, eventSpan, extractRange, pasteClip, rangeEnds, rangeEventIds, rangeNotes,
+} from './range';
 
 /** select=選んで直す、input=タップ・鍵盤で入れる、pen=五線に手書き */
 export type Mode = 'select' | 'input' | 'pen';
@@ -36,6 +39,12 @@ export class Editor {
   selectedId: string | null = null;
   /** 和音の中で操作対象にする音の番号 */
   selectedPitchIndex = 0;
+  /** 範囲選択（なければ null）。あるときは selectedId に範囲の最後の音が入る */
+  range: RangeSel | null = null;
+  /** 範囲を広げるときの起点 */
+  private rangeAnchor: RangeSel | null = null;
+  /** コピーした内容（楽譜をまたいで使える） */
+  clipboard: Clip | null = null;
 
   private undoStack: string[] = [];
   private redoStack: string[] = [];
@@ -59,6 +68,8 @@ export class Editor {
     this.undoStack = [];
     this.redoStack = [];
     this.selectedId = null;
+    this.range = null;
+    this.rangeAnchor = null;
     this.cursor = { partIndex: 0, measureIndex: 0, eventIndex: 0 };
     this.emit('score');
   }
@@ -85,6 +96,9 @@ export class Editor {
       return;
     }
     this.coalesceToken = coalesce ?? null;
+    // 範囲を使う操作は fn の中で範囲を設定し直す。それ以外の操作では範囲を解く
+    this.range = null;
+    this.rangeAnchor = null;
     const before = JSON.stringify({ score: this.score, cursor: this.cursor, sel: this.selectedId });
     fn();
     this.score.updatedAt = Date.now();
@@ -99,6 +113,8 @@ export class Editor {
     this.score = s.score;
     this.cursor = s.cursor;
     this.selectedId = s.sel;
+    this.range = null;
+    this.rangeAnchor = null;
   }
 
   private snapshot() {
@@ -130,6 +146,7 @@ export class Editor {
 
   setMode(mode: Mode) {
     this.mode = mode;
+    if (mode !== 'select') { this.range = null; this.rangeAnchor = null; }
     this.emit('view');
   }
 
@@ -137,13 +154,13 @@ export class Editor {
     this.inputDuration = d;
     if (d === '32') this.inputDots = 0;
     // 選択中の音符があれば、その長さも変える（MuseScoreと同じ挙動）
-    if (this.mode === 'select' && this.selectedId) this.setSelectedDuration(d, this.inputDots);
+    if (this.mode === 'select' && this.selectedId && !this.range) this.setSelectedDuration(d, this.inputDots);
     else this.emit('view');
   }
 
   toggleDot() {
     this.inputDots = this.inputDots ? 0 : 1;
-    if (this.mode === 'select' && this.selectedId) {
+    if (this.mode === 'select' && this.selectedId && !this.range) {
       const sel = this.selected;
       if (sel) this.setSelectedDuration(sel.duration, this.inputDots);
     } else this.emit('view');
@@ -164,6 +181,8 @@ export class Editor {
   }
 
   select(id: string | null, pitchIndex = 0) {
+    this.range = null;
+    this.rangeAnchor = null;
     this.selectedId = id;
     this.selectedPitchIndex = pitchIndex;
     const loc = id ? findEvent(this.score, id) : null;
@@ -359,6 +378,7 @@ export class Editor {
 
   /** 選択中の音を休符に置き換える。和音なら選択中の1音だけ消す。 */
   deleteSelected() {
+    if (this.range) { this.deleteRange(); return; }
     const loc = this.selectedLocation;
     if (!loc) return;
     this.mutate(() => {
@@ -411,6 +431,7 @@ export class Editor {
 
   /** 選択中の音を五線上で上下に動かす（steps = 白鍵の数）。調号の変化に合わせる。 */
   transposeSelected(steps: number, coalesce?: string) {
+    if (this.range) { this.transposeRange(steps); return; }
     const loc = this.selectedLocation;
     const ev = this.selected;
     if (!loc || !ev || ev.kind !== 'note') return;
@@ -439,6 +460,7 @@ export class Editor {
   }
 
   setSelectedAccidental(alter: number) {
+    if (this.range) { this.setRangeAccidental(alter); return; }
     const loc = this.selectedLocation;
     const ev = this.selected;
     if (!loc || !ev || ev.kind !== 'note') return;
@@ -505,6 +527,227 @@ export class Editor {
   private chordTargets(note: NoteEvent): number[] {
     if (note.pitches.length === 1) return [0];
     return [Math.min(this.selectedPitchIndex, note.pitches.length - 1)];
+  }
+
+  // ---------- 範囲選択・コピー・貼り付け ----------
+
+  /** 範囲に入っている音符・休符の id（描画用） */
+  get rangeIds(): Set<string> | null {
+    return this.range ? rangeEventIds(this.score, this.range) : null;
+  }
+
+  /** 範囲をそのまま設定する（起点も同じ範囲） */
+  setRange(r: RangeSel | null) {
+    this.range = r ? { ...r } : null;
+    this.rangeAnchor = r ? { ...r } : null;
+    this.afterRangeChange();
+    this.emit('view');
+  }
+
+  /** 選択中の音（または範囲の起点）から id の音までを範囲にする。Shift+タップ・なぞり選択で使う */
+  extendSelectionTo(id: string) {
+    const target = eventSpan(this.score, id);
+    if (!target) return;
+    if (!this.rangeAnchor) {
+      const from = this.selectedId ? eventSpan(this.score, this.selectedId) : null;
+      if (!from) { this.select(id); return; }
+      this.rangeAnchor = { partFrom: from.partIndex, partTo: from.partIndex, start: from.start, end: from.end };
+    }
+    const a = this.rangeAnchor;
+    this.range = {
+      partFrom: Math.min(a.partFrom, target.partIndex),
+      partTo: Math.max(a.partTo, target.partIndex),
+      start: Math.min(a.start, target.start),
+      end: Math.max(a.end, target.end),
+    };
+    this.afterRangeChange(id);
+    this.emit('view');
+  }
+
+  /** 1つの音から別の音までを範囲にする（長押しでなぞる選択の始まり） */
+  selectRange(anchorId: string, focusId: string) {
+    const a = eventSpan(this.score, anchorId);
+    if (!a) return;
+    this.rangeAnchor = { partFrom: a.partIndex, partTo: a.partIndex, start: a.start, end: a.end };
+    this.range = null;
+    this.extendSelectionTo(focusId);
+  }
+
+  /** 小節単位で選ぶ（mTo まで含む） */
+  selectMeasures(partFrom: number, partTo: number, mFrom: number, mTo: number) {
+    const cap = this.capacity;
+    const n = this.score.parts[0].measures.length;
+    const a = Math.max(0, Math.min(mFrom, mTo));
+    const b = Math.min(n - 1, Math.max(mFrom, mTo));
+    this.setRange({ partFrom: Math.min(partFrom, partTo), partTo: Math.max(partFrom, partTo), start: a * cap, end: (b + 1) * cap });
+  }
+
+  selectAll() {
+    this.selectMeasures(0, this.score.parts.length - 1, 0, this.score.parts[0].measures.length - 1);
+  }
+
+  /** 範囲の最後の音へ、前後に1つずつ広げる・縮める（Shift+←→） */
+  extendByStep(delta: number) {
+    const focus = this.selectedId;
+    if (!focus) return;
+    const loc = findEvent(this.score, focus);
+    if (!loc) return;
+    const part = this.score.parts[loc.partIndex];
+    let m = loc.measureIndex;
+    let e = loc.eventIndex + delta;
+    if (e < 0) { m--; e = m >= 0 ? part.measures[m].events.length - 1 : 0; }
+    else if (e >= part.measures[m].events.length) { m++; e = 0; }
+    const ev = part.measures[m]?.events[e];
+    if (!ev) return;
+    if (!this.rangeAnchor) this.extendSelectionTo(focus);
+    // 起点より手前に戻ってきたら、起点から広げ直す
+    const a = this.rangeAnchor!;
+    const t = eventSpan(this.score, ev.id)!;
+    this.range = {
+      partFrom: Math.min(a.partFrom, t.partIndex), partTo: Math.max(a.partTo, t.partIndex),
+      start: Math.min(a.start, t.start), end: Math.max(a.end, t.end),
+    };
+    this.afterRangeChange(ev.id);
+    this.emit('view');
+  }
+
+  clearRange() {
+    if (!this.range) return;
+    this.range = null;
+    this.rangeAnchor = null;
+    this.emit('view');
+  }
+
+  private afterRangeChange(focusId?: string) {
+    if (!this.range) return;
+    const ends = rangeEnds(this.score, this.range);
+    this.selectedId = focusId ?? ends?.last ?? null;
+    this.selectedPitchIndex = 0;
+    const first = ends ? findEvent(this.score, ends.first) : null;
+    if (first) this.cursor = { ...first };
+  }
+
+  /** いまコピーの対象になるもの：範囲、なければ選択中の1音 */
+  private copySource(): RangeSel | null {
+    if (this.range) return this.range;
+    if (!this.selectedId) return null;
+    const s = eventSpan(this.score, this.selectedId);
+    return s ? { partFrom: s.partIndex, partTo: s.partIndex, start: s.start, end: s.end } : null;
+  }
+
+  get canCopy() {
+    return !!this.copySource();
+  }
+
+  get canPaste() {
+    return !!this.clipboard && !!this.pasteTarget();
+  }
+
+  copy(): boolean {
+    const r = this.copySource();
+    if (!r) return false;
+    this.clipboard = extractRange(this.score, r);
+    this.emit('view');
+    return true;
+  }
+
+  cut(): boolean {
+    const r = this.copySource();
+    if (!r) return false;
+    this.clipboard = extractRange(this.score, r);
+    this.mutate(() => this.clearRaw(r));
+    return true;
+  }
+
+  /** 範囲（なければ選択中の1音）を休符にする */
+  deleteRange() {
+    const r = this.copySource();
+    if (!r) return;
+    this.mutate(() => this.clearRaw(r));
+  }
+
+  private clearRaw(r: RangeSel) {
+    clearRange(this.score, r);
+    this.range = { ...r };
+    this.rangeAnchor = { ...r };
+    this.afterRangeChange();
+  }
+
+  /** 貼り付ける位置：範囲の頭 → 選択中の音 → 入力位置（カーソル） */
+  private pasteTarget(): { partIndex: number; start: number } | null {
+    if (this.range) return { partIndex: this.range.partFrom, start: this.range.start };
+    if (this.selectedId && this.mode !== 'input') {
+      const s = eventSpan(this.score, this.selectedId);
+      if (s) return { partIndex: s.partIndex, start: s.start };
+    }
+    const c = this.cursor;
+    const part = this.score.parts[c.partIndex];
+    const m = part?.measures[c.measureIndex];
+    if (!m) return null;
+    let t = c.measureIndex * this.capacity;
+    for (let i = 0; i < Math.min(c.eventIndex, m.events.length); i++) t += eventTicks(m.events[i]);
+    return { partIndex: c.partIndex, start: t };
+  }
+
+  /** 貼り付け。貼った所を範囲として選び、入力位置はその次へ */
+  paste(): boolean {
+    const clip = this.clipboard;
+    const at = this.pasteTarget();
+    if (!clip || !at) return false;
+    this.mutate(() => {
+      const r = pasteClip(this.score, clip, at.partIndex, at.start);
+      if (!r) return;
+      if (this.mode === 'select') {
+        this.range = { ...r };
+        this.rangeAnchor = { ...r };
+        this.afterRangeChange();
+      } else {
+        this.selectedId = null;
+      }
+      // 入力位置は貼った所のすぐ後ろ（入力モードで最後まで来たら、入力と同じく小節を足す）
+      const cap = this.capacity;
+      let mi = Math.floor(r.end / cap);
+      if (this.mode === 'input') this.ensureMeasure(mi);
+      const ms = this.score.parts[r.partFrom].measures;
+      if (mi >= ms.length) { mi = ms.length - 1; this.cursor = { partIndex: r.partFrom, measureIndex: mi, eventIndex: ms[mi].events.length - 1 }; return; }
+      const m = ms[mi];
+      let t = mi * cap;
+      let ei = 0;
+      while (ei < m.events.length && t < r.end) { t += eventTicks(m.events[ei]); ei++; }
+      this.cursor = { partIndex: r.partFrom, measureIndex: mi, eventIndex: ei };
+    });
+    return true;
+  }
+
+  private transposeRange(steps: number) {
+    const r = this.range!;
+    this.mutate(() => {
+      for (const note of rangeNotes(this.score, r)) {
+        note.pitches = note.pitches.map((p) => {
+          const np = fromDiatonic(diatonicIndex(p) + steps);
+          np.alter = keyAlter(this.score.keyFifths, np.step);
+          return np;
+        }).sort(comparePitch);
+      }
+      this.range = { ...r };
+      this.rangeAnchor = { ...r };
+      this.afterRangeChange(this.selectedId ?? undefined);
+    });
+  }
+
+  private setRangeAccidental(alter: number) {
+    const r = this.range!;
+    const focus = this.selectedId;
+    this.mutate(() => {
+      const notes = rangeNotes(this.score, r);
+      // 全部がすでにその記号なら調号どおりに戻す
+      const all = notes.every((n) => n.pitches.every((p) => p.alter === alter));
+      for (const n of notes)
+        n.pitches = n.pitches.map((p) => ({ ...p, alter: all ? keyAlter(this.score.keyFifths, p.step) : alter }));
+      this.range = { ...r };
+      this.rangeAnchor = { ...r };
+      this.afterRangeChange(focus ?? undefined);
+    });
   }
 
   // ---------- 小節・楽譜全体 ----------

@@ -84,6 +84,12 @@
           <button id="btn-right" class="tool" data-icon="right" title="次の音と入れ替え"><span>次と</span></button>
           <button id="btn-delete" class="tool danger" data-icon="trash" title="削除 (Delete)"><span>削除</span></button>
         </div>
+        <div class="group" id="range-tools" aria-label="範囲とコピー">
+          <button id="btn-range" class="tool" data-icon="range" title="範囲選択：オンにすると、次にタップした音までを範囲にします（Shift+タップ、長押ししてなぞっても選べます）"><span>範囲</span></button>
+          <button id="btn-copy" class="tool" data-icon="copy" title="コピー (Ctrl+C)"><span>コピー</span></button>
+          <button id="btn-cut" class="tool" data-icon="cut" title="切り取り (Ctrl+X)"><span>切り取り</span></button>
+          <button id="btn-paste" class="tool" data-icon="paste" title="貼り付け (Ctrl+V)：選んだ音（入力モードでは入力位置）から上書きで貼ります"><span>貼り付け</span></button>
+        </div>
         <div class="group">
           <button id="btn-tempo" class="tool" data-icon="tempo" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）"><span>テンポ</span></button>
           <button id="btn-measure-menu" class="tool" data-icon="measure" title="小節の追加・削除" aria-haspopup="menu"><span>小節</span></button>
@@ -103,6 +109,8 @@
     <button role="menuitem" id="btn-add-measure">小節を最後に追加</button>
     <button role="menuitem" id="btn-insert-measure">カーソルの前に小節を挿入</button>
     <button role="menuitem" id="btn-remove-measure" class="danger">カーソルのある小節を削除</button>
+    <button role="menuitem" id="btn-select-measure">カーソルのある小節を範囲選択</button>
+    <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
     <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
   </div>
