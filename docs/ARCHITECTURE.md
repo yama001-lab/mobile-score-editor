@@ -71,6 +71,15 @@
 - 逆向き（Score → MusicXML）は `src/export/musicxml.ts`。MuseScore などへ持っていける
 - ブラウザ内だけでの OMR（画像から直接読む）は未実装。やるなら `importBytes()` の `needs-omr` の所に差し込む
 
+### 記号（スラー・強弱・アーティキュレーション）
+- 音符1つに付く記号は `MusicEvent` の `articulations` / `dynamic`。複数の音符にまたがる記号（スラー・クレッシェンド・ディミヌエンド）は
+  `Score.spanners`（始まりと終わりの音符の id）。音符が消えたスパナーは残っていても `resolveSpanners()` で無視する（`src/model/marks.ts`）
+- 編集は `Editor.toggleArticulation()` / `setDynamic()` / `toggleSpanner()`。道具は `src/ui/marks-palette.ts` が `#palette` に足す
+- 描画は `src/render/marks.ts`（アーティキュレーションは VexFlow、スラー・ヘアピンは自前の線、強弱記号は Bravura の字形。段をまたぐ記号は段の端で切る）
+- 再生は `src/audio/expression.ts`（強さ・スタッカートの長さ・フェルマータの間）
+- MusicXML は `src/export/musicxml-marks.ts` と `src/import/musicxml-marks.ts`
+- 範囲コピーなどで音符を複製するときは、id を付け直すならスパナーも付け直すこと
+
 ### 連符
 - 音符・休符の `tuplet?: { id, actual, normal }`（3連符なら 3:2）。同じ `id` が小節内で続いた音が1つの連符。
   `duration` は楽譜に書く音価のまま持ち、鳴る長さは `eventTicks()` が `normal/actual` 倍にする（`writtenTicks()` は縮めない長さ）

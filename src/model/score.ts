@@ -31,7 +31,7 @@ export interface Tuplet {
 /** 連符の種類 → normal（何個分の長さか）。ティックが整数で割り切れるものだけ */
 export const TUPLET_NORMAL: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 4, 6: 4 };
 
-export interface NoteEvent {
+export interface NoteEvent extends EventMarks {
   id: string;
   kind: 'note';
   duration: DurationType;
@@ -43,12 +43,34 @@ export interface NoteEvent {
   tie?: boolean;
 }
 
-export interface RestEvent {
+export interface RestEvent extends EventMarks {
   id: string;
   kind: 'rest';
   duration: DurationType;
   dots: number;
   tuplet?: Tuplet;
+}
+
+/** アーティキュレーション（スタッカートなど）。休符に付けられるのはフェルマータだけ */
+export type Articulation = 'staccato' | 'accent' | 'tenuto' | 'marcato' | 'fermata';
+/** 強弱記号 */
+export type Dynamic = 'pp' | 'p' | 'mp' | 'mf' | 'f' | 'ff' | 'sfz' | 'fp';
+
+/** 音符・休符1つに付く記号（src/model/marks.ts で編集する） */
+export interface EventMarks {
+  articulations?: Articulation[];
+  dynamic?: Dynamic;
+}
+
+/** 複数の音符にまたがる記号：スラー、クレッシェンド（cresc）、ディミヌエンド（dim） */
+export type SpannerKind = 'slur' | 'cresc' | 'dim';
+
+export interface Spanner {
+  id: string;
+  kind: SpannerKind;
+  /** 始まりと終わりの音符（休符）の id。同じパートの中で from が先 */
+  from: string;
+  to: string;
 }
 
 export type MusicEvent = NoteEvent | RestEvent;
@@ -89,6 +111,8 @@ export interface Score {
   tempoMarks?: TempoMark[];
   /** 再生のチューニング：A4（ラ）の周波数 Hz。省略時は 440 */
   tuning?: number;
+  /** スラー・クレッシェンドなど。消えた音符を指すものは無視する（src/model/marks.ts） */
+  spanners?: Spanner[];
   createdAt: number;
   updatedAt: number;
 }
@@ -368,11 +392,16 @@ export function reflowPart(part: Part, capacity: number, beat: number = PPQ): vo
       for (let k = 0; k < pieces.length; k++) {
         const pc = pieces[k];
         const isLast = remaining - take === 0 && k === pieces.length - 1;
-        if (ev.kind === 'note') {
-          push(makeNote(ev.pitches, pc.duration, pc.dots, isLast ? !!ev.tie : true));
-        } else {
-          push(makeRest(pc.duration, pc.dots));
+        const piece = ev.kind === 'note'
+          ? makeNote(ev.pitches, pc.duration, pc.dots, isLast ? !!ev.tie : true)
+          : makeRest(pc.duration, pc.dots);
+        // 最初のかけらは元の id と記号を引き継ぐ（スラーなどが付いたままになるように）
+        if (first && k === 0) {
+          piece.id = ev.id;
+          if (ev.articulations) piece.articulations = [...ev.articulations];
+          if (ev.dynamic) piece.dynamic = ev.dynamic;
         }
+        push(piece);
       }
       remaining -= take;
       first = false;

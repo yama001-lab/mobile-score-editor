@@ -4,7 +4,7 @@
  */
 import { DurationType, decompose, ticksOf } from '../model/duration';
 import { Pitch } from '../model/pitch';
-import { Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
+import { EventMarks, Measure, MusicEvent, makeNote, makeRest, normalizeMeasure, uid } from '../model/score';
 
 /** 連符の一員であること（同じ key の続いた音が1つの連符） */
 export interface TimedTuplet {
@@ -24,6 +24,10 @@ export interface TimedEvent {
   pitches: Pitch[] | null;
   /** 次の音へタイでつなぐ */
   tie: boolean;
+  /** 付いている記号（分けたときは最初のかけらに付ける） */
+  marks?: EventMarks;
+  /** 置いた結果：最初と最後のかけらの id（スラーなどをつなぐのに使う）。buildMeasures が書き込む */
+  placed?: { first: string; last: string };
   tuplet?: TimedTuplet;
 }
 
@@ -70,7 +74,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
     let e = i + 1;
     while (e < events.length && events[e].tuplet?.key === key) e++;
     const g = events.slice(i, e);
-    if (validTuplet(g, capacity)) groups.push(g.map((x) => ({ ...x, start: Math.round(x.start), ticks: Math.round(x.ticks) })));
+    if (validTuplet(g, capacity)) groups.push(g.map((x) => ({ ...x, start: Math.round(x.start), ticks: Math.round(x.ticks), orig: x })));
     else singles.push(...g.map((x) => ({ ...x, tuplet: undefined })));
     i = e - 1;
   }
@@ -80,15 +84,15 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
       const start = snap(e.start);
       const end = snap(e.start + e.ticks);
       if (start !== e.start || end !== e.start + e.ticks) quantized = true;
-      return { ...e, start, ticks: Math.max(end - start, e.pitches ? GRID : 0) };
+      return { ...e, start, ticks: Math.max(end - start, e.pitches ? GRID : 0), orig: e };
     })
     .filter((e) => e.ticks > 0);
-  const sorted: TimedEvent[][] = [...snapped.map((e) => [e]), ...groups].sort((a, b) => a[0].start - b[0].start);
+  const sorted: (TimedEvent & { orig?: TimedEvent })[][] = [...snapped.map((e) => [e]), ...groups].sort((a, b) => a[0].start - b[0].start);
 
   const buckets: MusicEvent[][] = [];
   let cursor = 0;
 
-  const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean) => {
+  const emit = (len: number, pitches: Pitch[] | null, tieAtEnd: boolean, src?: TimedEvent) => {
     while (len > 0) {
       const mi = Math.floor(cursor / capacity);
       const room = (mi + 1) * capacity - cursor;
@@ -97,9 +101,18 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
       (buckets[mi] ??= []);
       pieces.forEach((pc, k) => {
         const lastOfAll = take === len && k === pieces.length - 1;
-        buckets[mi].push(pitches
+        const ev: MusicEvent = pitches
           ? makeNote(pitches, pc.duration, pc.dots, lastOfAll ? tieAtEnd : true)
-          : makeRest(pc.duration, pc.dots));
+          : makeRest(pc.duration, pc.dots);
+        if (src) {
+          if (!src.placed) {
+            src.placed = { first: ev.id, last: ev.id };
+            if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
+            if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
+          }
+          src.placed.last = ev.id;
+        }
+        buckets[mi].push(ev);
       });
       cursor += take;
       len -= take;
@@ -120,6 +133,10 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
         const tp = e.tuplet!;
         const ev = e.pitches ? makeNote(e.pitches, tp.duration, tp.dots, e.tie) : makeRest(tp.duration, tp.dots);
         ev.tuplet = { id, actual: tp.actual, normal: tp.normal };
+        const src = e.orig ?? e;
+        src.placed = { first: ev.id, last: ev.id };
+        if (src.marks?.articulations?.length) ev.articulations = [...src.marks.articulations];
+        if (src.marks?.dynamic) ev.dynamic = src.marks.dynamic;
         (buckets[Math.floor(cursor / capacity)] ??= []).push(ev);
         cursor += e.ticks;
       }
@@ -136,7 +153,7 @@ export function buildMeasures(events: TimedEvent[], capacity: number, minMeasure
       start = cursor;
     }
     if (start > cursor) emit(start - cursor, null, false);
-    emit(ticks, e.pitches, e.pitches ? e.tie : false);
+    emit(ticks, e.pitches, e.pitches ? e.tie : false, e.orig);
   }
 
   const count = Math.max(minMeasures, Math.ceil(cursor / capacity), 1);

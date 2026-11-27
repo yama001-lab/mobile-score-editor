@@ -7,6 +7,7 @@ import {
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
 import { Clef, MusicEvent, Score, measureCapacity, tempoMarkAt } from '../model/score';
+import { SystemBox, attachArticulations, drawMarks } from './marks';
 
 export interface RenderOptions {
   /** 描画に使う論理幅（px） */
@@ -165,6 +166,7 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
     if (ev.dots && !(ev.kind === 'rest' && events.length === 1)) Dot.buildAndAttach([note], { all: true });
     if (inRange) note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
     if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
+    attachArticulations(note, ev);
     return note;
   });
   const tuplets = buildTuplets(events, notes);
@@ -330,6 +332,8 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
 
   const allNotes = new Map<string, { note: StaveNote; system: number }>();
   const ties: { from: string; to: string }[] = [];
+  const boxes: SystemBox[] = [];
+  const partOf = new Map<string, number>();
 
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
@@ -346,6 +350,14 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       });
       const noteStart = Math.max(...staves.map((s) => s.getNoteStartX()));
       staves.forEach((s) => s.setNoteStartX(noteStart));
+      if (k === 0) {
+        boxes[si] = {
+          x0: noteStart - 4,
+          x1: x + sys.widths.reduce((a, b) => a + b, 0) - 4,
+          tops: staves.map((s) => s.getYForLine(0)),
+          bottoms: staves.map((s) => s.getYForLine(4)),
+        };
+      }
       staves.forEach((s) => s.setContext(ctx).draw());
       const mark = mi > 0 ? tempoMarkAt(score, mi) : null;
       if (mark !== null) {
@@ -392,6 +404,7 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
 
         b.events.forEach((ev, i) => {
           allNotes.set(ev.id, { note: b.notes[i], system: si });
+          partOf.set(ev.id, pi);
           if (ev.kind === 'note' && ev.tie) {
             const next = nextEvent(score, pi, mi, i);
             if (next && next.kind === 'note') ties.push({ from: ev.id, to: next.id });
@@ -457,6 +470,8 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       if (b) new StaveTie({ first_note: null, last_note: b.note, first_indices: last, last_indices: last }).setContext(ctx).draw();
     }
   }
+
+  drawMarks(ctx, score, allNotes, boxes, partOf);
 
   return { hits, tempoHits, height };
 }

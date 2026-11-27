@@ -11,6 +11,8 @@ import {
   beatTicks, eventAt, eventTicks, findEvent, makeNote, makeRest, makeTupletGroup, measureCapacity, normalizeMeasure, overwriteAt,
   overwriteInTuplet, reflowPart, restsFor, TimeSignature, tupletRange,
 } from '../model/score';
+import { Articulation, Dynamic, SpannerKind } from '../model/score';
+import { setDynamicOn, toggleArticulationOn, toggleSpannerAt } from '../model/marks';
 import {
   Clip, RangeSel, clearRange, eventSpan, extractRange, pasteClip, rangeEnds, rangeEventIds, rangeNotes,
 } from './range';
@@ -616,6 +618,45 @@ export class Editor {
   private chordTargets(note: NoteEvent): number[] {
     if (note.pitches.length === 1) return [0];
     return [Math.min(this.selectedPitchIndex, note.pitches.length - 1)];
+  }
+
+  // ---------- 記号（スラー・強弱・アーティキュレーション） ----------
+
+  /** 選んだ音符のアーティキュレーションを付け外し（和音は音符全体に付く） */
+  toggleArticulation(a: Articulation) {
+    const loc = this.selectedLocation;
+    if (!loc) return;
+    this.mutate(() => toggleArticulationOn(eventAt(this.score, loc)!, a));
+  }
+
+  /** 選んだ音符の強弱記号。同じものをもう一度選ぶか null で消す */
+  setDynamic(d: Dynamic | null) {
+    const loc = this.selectedLocation;
+    if (!loc) return;
+    this.mutate(() => setDynamicOn(eventAt(this.score, loc)!, d));
+  }
+
+  /**
+   * スラー・クレッシェンド・ディミヌエンドの付け外し。
+   * 選択モード：選んだ音符から次の音符へ（続けて押すと伸びる、始まりの音符で押すと消える）。
+   * 入力モード（直前に入れた音符を選んでいる）：その前の音符からこの音符へ（続けて入れて押すと伸びる）。
+   */
+  toggleSpanner(kind: SpannerKind) {
+    const loc = this.selectedLocation;
+    const id = this.selectedId;
+    if (!loc || !id) return;
+    const append = this.mode !== 'select' && this.cursorFollows(loc);
+    this.mutate(() => {
+      const next = toggleSpannerAt(this.score, kind, id, append);
+      if (!append && next && next !== id) {
+        const nl = findEvent(this.score, next);
+        if (nl) {
+          this.selectedId = next;
+          this.selectedPitchIndex = 0;
+          this.cursor = { ...nl };
+        }
+      }
+    });
   }
 
   // ---------- 範囲選択・コピー・貼り付け ----------
