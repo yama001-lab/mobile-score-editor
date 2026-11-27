@@ -2,7 +2,8 @@
 import { DurationType, PPQ } from '../model/duration';
 import { Pitch } from '../model/pitch';
 import {
-  Clef, MusicEvent, Score, eventTicks, keyAt, measureTicks, keyChangeAt, measureAttrsAt, tempoMarkAt, timeSigAt, timeSigChangeAt,
+  Clef, JUMP_TEXT, MusicEvent, Score, clefAt, clefChangeAt, eventTicks, keyAt, measureTicks, keyChangeAt, measureAttrsAt, tempoMarkAt,
+  timeSigAt, timeSigChangeAt,
 } from '../model/score';
 import { parseChord, splitSyllable } from '../model/texts';
 import { MarksXml, marksXml } from './musicxml-marks';
@@ -83,17 +84,21 @@ export function toMusicXml(score: Score): string {
       }
       const ts = timeSigAt(score, mi);
       const timeXml = `<time><beats>${ts.beats}</beats><beat-type>${ts.beatType}</beat-type></time>`;
+      const clefXml = (c: Clef) => `<clef><sign>${CLEFS[c][0]}</sign><line>${CLEFS[c][1]}</line></clef>`;
       if (mi === 0) {
-        const [sign, line] = CLEFS[part.clef];
         out.push(`<attributes><divisions>${PPQ}</divisions><key><fifths>${keyAt(score, 0)}</fifths></key>`
-          + timeXml + `<clef><sign>${sign}</sign><line>${line}</line></clef></attributes>`);
+          + timeXml + clefXml(clefAt(part, 0)) + '</attributes>');
       } else {
         const kc = keyChangeAt(score, mi);
         const tc = timeSigChangeAt(score, mi);
-        if (kc !== null || tc) {
-          out.push(`<attributes>${kc !== null ? `<key><fifths>${kc}</fifths></key>` : ''}${tc ? timeXml : ''}</attributes>`);
+        const cc = clefChangeAt(part, mi);
+        if (kc !== null || tc || cc) {
+          out.push(`<attributes>${kc !== null ? `<key><fifths>${kc}</fifths></key>` : ''}${tc ? timeXml : ''}${cc ? clefXml(cc) : ''}</attributes>`);
         }
       }
+      // セーニョ・コーダ（小節の頭）
+      if (pi === 0 && attrs?.segno) out.push('<direction placement="above"><direction-type><segno/></direction-type><sound segno="segno"/></direction>');
+      if (pi === 0 && attrs?.coda) out.push('<direction placement="above"><direction-type><coda/></direction-type><sound coda="coda"/></direction>');
       if (pi === 0 && m.rehearsal) {
         out.push(`<direction placement="above"><direction-type><rehearsal>${esc(m.rehearsal)}</rehearsal></direction-type></direction>`);
       }
@@ -131,6 +136,13 @@ export function toMusicXml(score: Score): string {
           }
           const next = new Set<string>();
           const lyrics = lyricsXml(ev, v);
+          // 装飾音は本音符の前に、長さ（duration）なしで書く
+          for (const g of ev.graces ?? []) {
+            g.pitches.forEach((p, k) => {
+              out.push(`<note>${k > 0 ? '<chord/>' : ''}<grace${g.slash ? ' slash="yes"' : ''}/>${pitchXml(p)}<voice>${voiceNo}</voice>`
+                + `<type>${TYPE_NAMES[g.duration]}</type>${stem}</note>`);
+            });
+          }
           ev.pitches.forEach((p, k) => {
             const key = `${p.step}${p.alter}${p.octave}`;
             const stop = tiedFromPrev.has(key);
@@ -148,6 +160,14 @@ export function toMusicXml(score: Score): string {
         tiedFrom[v] = tiedFromPrev;
       });
       if (!m.voice2) tiedFrom[1] = new Set();
+      // Fine・To Coda・D.C./D.S.（小節の終わり）
+      if (pi === 0 && attrs) {
+        const words = (w: string, sound: string) =>
+          `<direction placement="above"><direction-type><words>${esc(w)}</words></direction-type><sound ${sound}/></direction>`;
+        if (attrs.fine) out.push(words('Fine', 'fine="yes"'));
+        if (attrs.toCoda) out.push(words('To Coda', 'tocoda="coda"'));
+        if (attrs.jump) out.push(words(JUMP_TEXT[attrs.jump], attrs.jump.startsWith('ds') ? 'dalsegno="segno"' : 'dacapo="yes"'));
+      }
       if (attrs?.repeatEnd || voltaEnds) {
         const times = attrs?.repeatTimes ? ` times="${attrs.repeatTimes}"` : '';
         out.push(`<barline location="right">${attrs?.repeatEnd ? '<bar-style>light-heavy</bar-style>' : ''}`

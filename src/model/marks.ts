@@ -5,7 +5,8 @@
  * 音符が消えてもスパナーは残ることがあるので、使うときは resolveSpanners() で有効なものだけを取り出す。
  */
 import {
-  Articulation, Dynamic, EventLocation, MusicEvent, Score, Spanner, SpannerKind, VOICE_COUNT, uid, voiceEvents,
+  Articulation, Dynamic, EventLocation, MusicEvent, Score, Spanner, SpannerKind, VOICE_COUNT, eventTicks, measureStartTick,
+  tickOfIndex, uid, voiceEvents,
 } from './score';
 
 export const ARTICULATIONS: Articulation[] = ['staccato', 'accent', 'tenuto', 'marcato', 'fermata'];
@@ -23,7 +24,23 @@ export const SPANNER_LABELS: Record<SpannerKind, string> = {
   slur: 'スラー',
   cresc: 'クレッシェンド',
   dim: 'ディミヌエンド',
+  '8va': '8va（1オクターブ上で）',
+  '8vb': '8vb（1オクターブ下で）',
+  pedal: 'ペダル',
 };
+
+/** 同時に重ねられない記号の組（スラーどうし、ヘアピンどうし、オクターブ記号どうし、ペダルどうし） */
+export function spannerGroup(kind: SpannerKind): string {
+  if (kind === 'cresc' || kind === 'dim') return 'hairpin';
+  if (kind === '8va' || kind === '8vb') return 'ottava';
+  return kind;
+}
+
+/** クレッシェンド・ディミヌエンドか */
+export const isHairpin = (kind: SpannerKind): kind is 'cresc' | 'dim' => kind === 'cresc' || kind === 'dim';
+
+/** オクターブ記号で鳴らす高さをずらす半音の数 */
+export const OTTAVA_SHIFT: Partial<Record<SpannerKind, number>> = { '8va': 12, '8vb': -12 };
 
 /** 休符に付けられるのはフェルマータだけ */
 export function canHaveArticulation(ev: MusicEvent, a: Articulation) {
@@ -112,7 +129,7 @@ export function addSpanner(score: Score, kind: SpannerKind, from: string, to: st
   const all = resolveSpanners(score);
   const me = all.find((r) => r.spanner.id === s.id);
   if (me) {
-    const clash = (k: SpannerKind) => (kind === 'slur' ? k === 'slur' : k !== 'slur');
+    const clash = (k: SpannerKind) => spannerGroup(k) === spannerGroup(kind);
     const drop = new Set(all
       .filter((r) => r.spanner.id !== s.id && clash(r.spanner.kind) && r.partIndex === me.partIndex && r.voice === me.voice
         && r.from.index <= me.to.index && me.from.index <= r.to.index)
@@ -128,9 +145,49 @@ export function removeSpanner(score: Score, id: string): void {
   if (!score.spanners.length) delete score.spanners;
 }
 
-/** スラーは音符から音符へ。クレッシェンドなどは休符でもよい */
+/** スラー・オクターブ記号は音符から音符へ。クレッシェンド・ペダルは休符でもよい */
 function stepTarget(kind: SpannerKind, fe: FlatEvent) {
-  return kind !== 'slur' || fe.ev.kind === 'note';
+  return (kind !== 'slur' && kind !== '8va' && kind !== '8vb') || fe.ev.kind === 'note';
+}
+
+/**
+ * オクターブ記号のかかった音符の id → 鳴らすときにずらす半音の数。
+ * 記号は声部ごとに付くが、同じパートのもう一方の声部の、範囲の中で始まる音にも効かせる（楽譜の読み方と同じ）。
+ */
+export function ottavaShifts(score: Score): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of resolveSpanners(score)) {
+    const shift = OTTAVA_SHIFT[r.spanner.kind];
+    if (!shift) continue;
+    const seq = flatEvents(score, r.partIndex, r.voice);
+    for (let k = r.from.index; k <= r.to.index; k++) out.set(seq[k].ev.id, shift);
+    // もう一方の声部：時刻で範囲を求める
+    const startAt = absTick(score, r.from), endAt = absTick(score, r.to) + eventTicks(r.to.ev);
+    for (let v = 0; v < VOICE_COUNT; v++) {
+      if (v === r.voice) continue;
+      for (const fe of flatEvents(score, r.partIndex, v)) {
+        const t = absTick(score, fe);
+        if (t >= startAt && t < endAt && !out.has(fe.ev.id)) out.set(fe.ev.id, shift);
+      }
+    }
+  }
+  return out;
+}
+
+/** いちばん上のパートで 8va がかかっている小節（テンポ表記などを 8va の線の上へ逃がすため） */
+export function ottavaAboveMeasures(score: Score): Set<number> {
+  const out = new Set<number>();
+  for (const r of resolveSpanners(score)) {
+    if (r.partIndex !== 0 || r.spanner.kind !== '8va') continue;
+    for (let m = r.from.loc.measureIndex; m <= r.to.loc.measureIndex; m++) out.add(m);
+  }
+  return out;
+}
+
+/** 曲頭からのティック（楽譜に書かれた順。リピートは数えない） */
+function absTick(score: Score, fe: FlatEvent): number {
+  const m = score.parts[fe.loc.partIndex].measures[fe.loc.measureIndex];
+  return measureStartTick(score, fe.loc.measureIndex) + tickOfIndex(voiceEvents(m, fe.loc.voice), fe.loc.eventIndex);
 }
 
 /**

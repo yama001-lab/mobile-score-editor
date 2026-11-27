@@ -2,7 +2,8 @@
 import { PPQ } from '../model/duration';
 import { toMidi } from '../model/pitch';
 import { Instrument, Score, VOICE_COUNT, capacityAt, eventTicks, playOrder, tempoAt, voiceEvents } from '../model/score';
-import { DynamicsTrack, fermataPauses, noteVelocity, shortenFor } from './expression';
+import { ottavaShifts, resolveSpanners } from '../model/marks';
+import { DynamicsTrack, fermataPauses, graceTimes, noteVelocity, shortenFor } from './expression';
 
 export interface ScheduledNote {
   /** 再生開始からの秒 */
@@ -65,6 +66,12 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
 
   const notes: ScheduledNote[] = [];
   const marks: ScheduledMark[] = [];
+  // オクターブ記号：書いた高さから鳴らす高さへのずれ
+  const shifts = ottavaShifts(score);
+  // ペダル：音符・休符が鳴った時刻（リピートで何度も鳴るので並び）。あとでペダルの区間を求める
+  const pedals = resolveSpanners(score).filter((r) => r.spanner.kind === 'pedal');
+  const pedalIds = new Set(pedals.flatMap((r) => [r.from.ev.id, r.to.ev.id]));
+  const played = new Map<string, { start: number; end: number }[]>();
   score.parts.forEach((part, partIndex) => {
     const dyn = new DynamicsTrack(score, partIndex);
     /** 声部1の強さ（小節の位置 → 強さ）。声部2の音は、同じ時刻の声部1の強さで鳴らす */
@@ -81,6 +88,7 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
           const start = timeAt(k, tick);
           const end = timeAt(k, tick + len);
           if (!voice) marks.push({ time: start, partIndex, measureIndex: mi, eventIndex });
+          if (pedalIds.has(ev.id)) played.set(ev.id, [...(played.get(ev.id) ?? []), { start, end }]);
           const next = new Map<number, ScheduledNote>();
           let level = dyn.levelAt(ev);
           if (!voice) {
@@ -90,15 +98,30 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
             for (const x of v1Levels.get(mi) ?? []) if (x.tick <= tick) level = x.level;
           }
           if (ev.kind === 'note') {
+            const shift = shifts.get(ev.id) ?? 0;
+            // 装飾音：本音符の頭から少しずつ鳴らし、本音符はそのぶん遅らせる（タイの続きには付けない）
+            let mainStart = start;
+            if (ev.graces?.length) {
+              const g = graceTimes(ev.graces, end - start);
+              ev.graces.forEach((gr, gi) => {
+                for (const p of gr.pitches) {
+                  notes.push({
+                    time: start + g.offsets[gi], duration: g.lengths[gi], midi: toMidi(p) + shift, instrument: part.instrument,
+                    partIndex, velocity: noteVelocity(ev, level) * 0.85,
+                  });
+                }
+              });
+              mainStart = start + g.total;
+            }
             // スタッカートなどは鳴らす長さを縮める（タイの途中は縮めない）
-            const playEnd = ev.tie ? end : start + (end - start) * shortenFor(ev);
+            const playEnd = ev.tie ? end : mainStart + (end - mainStart) * shortenFor(ev);
             for (const p of ev.pitches) {
-              const midi = toMidi(p);
+              const midi = toMidi(p) + shift;
               let n = tied.get(midi);
               if (n) n.duration = playEnd - n.time;
               else {
                 n = {
-                  time: start, duration: playEnd - start, midi, instrument: part.instrument, partIndex,
+                  time: mainStart, duration: playEnd - mainStart, midi, instrument: part.instrument, partIndex,
                   velocity: noteVelocity(ev, level),
                 };
                 notes.push(n);
@@ -114,6 +137,19 @@ export function buildSchedule(score: Score, fromMeasure = 0): Schedule {
       });
     }
   });
+  // ペダル：踏んでいる間に鳴り始めた音は、ペダルを上げるまで伸ばす（同じパートの音）
+  for (const r of pedals) {
+    const downs = played.get(r.from.ev.id) ?? [];
+    const ups = played.get(r.to.ev.id) ?? [];
+    for (const d of downs) {
+      const up = ups.find((u) => u.end > d.start);
+      if (!up) continue;
+      for (const n of notes) {
+        if (n.partIndex !== r.partIndex || n.time < d.start - 1e-9 || n.time >= up.end - 1e-9) continue;
+        n.duration = Math.max(n.duration, up.end - n.time);
+      }
+    }
+  }
   notes.sort((a, b) => a.time - b.time);
   marks.sort((a, b) => a.time - b.time || a.partIndex - b.partIndex);
   return { notes, marks, length };

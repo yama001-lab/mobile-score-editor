@@ -43,6 +43,17 @@ export interface Tuplet {
 /** 連符の種類 → normal（何個分の長さか）。ティックが整数で割り切れるものだけ */
 export const TUPLET_NORMAL: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 4, 6: 4 };
 
+/**
+ * 装飾音（前打音）。本音符の前に小さく書く。長さは小節の中で数えない。
+ * slash=true は斜線付きの短前打音（アッチャカトゥーラ）、false は長前打音（アッポッジャトゥーラ）。
+ */
+export interface GraceNote {
+  /** 和音なら複数。低い順 */
+  pitches: Pitch[];
+  duration: '8' | '16';
+  slash?: boolean;
+}
+
 export interface NoteEvent extends EventMarks, EventTexts {
   id: string;
   kind: 'note';
@@ -53,6 +64,8 @@ export interface NoteEvent extends EventMarks, EventTexts {
   pitches: Pitch[];
   /** 次の音符へタイでつなぐ */
   tie?: boolean;
+  /** この音符の前に付く装飾音（左から順） */
+  graces?: GraceNote[];
 }
 
 export interface RestEvent extends EventMarks, EventTexts {
@@ -74,8 +87,11 @@ export interface EventMarks {
   dynamic?: Dynamic;
 }
 
-/** 複数の音符にまたがる記号：スラー、クレッシェンド（cresc）、ディミヌエンド（dim） */
-export type SpannerKind = 'slur' | 'cresc' | 'dim';
+/**
+ * 複数の音符にまたがる記号：スラー、クレッシェンド（cresc）、ディミヌエンド（dim）、
+ * オクターブ記号（8va＝1オクターブ上で弾く、8vb＝下で弾く。音符は書いた高さのまま持つ）、ペダル（pedal）
+ */
+export type SpannerKind = 'slur' | 'cresc' | 'dim' | '8va' | '8vb' | 'pedal';
 
 export interface Spanner {
   id: string;
@@ -98,6 +114,8 @@ export interface Measure {
   voice2?: MusicEvent[];
   /** 練習番号（A、B…）。いちばん上のパートの小節にだけ付ける */
   rehearsal?: string;
+  /** この小節から音部記号を変える（パートごと）。省略＝前の小節のまま。読むときは clefAt() */
+  clef?: Clef;
 }
 
 /** 1段の中の声部の数（声部1・声部2） */
@@ -136,7 +154,25 @@ export interface MeasureAttrs {
   repeatTimes?: number;
   /** 番号付きカッコ（1番・2番）。この小節が何番のときに弾かれるか。続く小節で同じ番号なら1つのカッコ */
   volta?: number[];
+  /** 小節の頭にセーニョ（D.S. で戻る所） */
+  segno?: boolean;
+  /** 小節の頭にコーダ記号（To Coda からとんで来る所） */
+  coda?: boolean;
+  /** 小節の終わりに To Coda（D.S./D.C. で戻ったあと、ここからコーダへとぶ） */
+  toCoda?: boolean;
+  /** 小節の終わりに Fine（D.S./D.C. で戻ったあと、ここで終わる） */
+  fine?: boolean;
+  /** 小節の終わりの D.C.（曲頭へ）・D.S.（セーニョへ）。al Fine / al Coda 付きも */
+  jump?: JumpKind;
 }
+
+/** D.C. / D.S. の種類 */
+export type JumpKind = 'dc' | 'dc-fine' | 'dc-coda' | 'ds' | 'ds-fine' | 'ds-coda';
+
+export const JUMP_TEXT: Record<JumpKind, string> = {
+  dc: 'D.C.', 'dc-fine': 'D.C. al Fine', 'dc-coda': 'D.C. al Coda',
+  ds: 'D.S.', 'ds-fine': 'D.S. al Fine', 'ds-coda': 'D.S. al Coda',
+};
 
 export interface Score {
   schemaVersion: number;
@@ -456,6 +492,26 @@ export function normalizeMeasure(m: Measure, capacity: number): void {
   }
 }
 
+export function cloneGraces(g: GraceNote[]): GraceNote[] {
+  return g.map((x) => ({ ...x, pitches: x.pitches.map((p) => ({ ...p })) }));
+}
+
+/** パートの measure 小節目で有効な音部記号（途中の変更 Measure.clef をたどる） */
+export function clefAt(part: Part, measure: number): Clef {
+  for (let i = Math.min(measure, part.measures.length - 1); i >= 0; i--) {
+    const c = part.measures[i]?.clef;
+    if (c) return c;
+  }
+  return part.clef;
+}
+
+/** この小節の頭で音部記号が変わるか（1小節目は除く）。変わるなら新しい音部記号 */
+export function clefChangeAt(part: Part, measure: number): Clef | null {
+  if (measure === 0) return null;
+  const c = part.measures[measure]?.clef;
+  return c && c !== clefAt(part, measure - 1) ? c : null;
+}
+
 /** 歌詞・コードネーム・文字のどれかが付いているか */
 export function hasTexts(e: EventTexts): boolean {
   return !!(e.lyrics?.some((l) => l) || e.chord || e.text);
@@ -478,11 +534,13 @@ export function reflowPart(part: Part, capacity: CapacityOf, beat: number = PPQ)
  * 曲の途中の拍子変更・弱起の変更でも使う。
  */
 export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: number = PPQ): Measure[] {
-  // 練習番号は、元の小節の頭の時刻で新しい小節に付け直す
+  // 練習番号・途中の音部記号は、元の小節の頭の時刻で新しい小節に付け直す
   const rehearsals: { tick: number; text: string }[] = [];
+  const clefs: { tick: number; clef: Clef }[] = [];
   let at = 0;
   for (const m of source) {
     if (m.rehearsal) rehearsals.push({ tick: at, text: m.rehearsal });
+    if (m.clef) clefs.push({ tick: at, clef: m.clef });
     at += measureTicks(m);
   }
   const v1 = reflowEvents(source.flatMap((m) => m.events), capacity, beat);
@@ -496,12 +554,15 @@ export function reflowMeasures(source: Measure[], capacity: CapacityOf, beat: nu
   });
   if (!measures.length) measures.push(createMeasure(capOf(capacity, 0)));
   measures.forEach((m, i) => normalizeMeasure(m, capOf(capacity, i)));
-  for (const r of rehearsals) {
+  const measureAt = (tick: number) => {
     let start = 0;
     let i = 0;
-    while (i < measures.length - 1 && start + capOf(capacity, i) <= r.tick) start += capOf(capacity, i++);
-    measures[i].rehearsal ??= r.text;
-  }
+    while (i < measures.length - 1 && start + capOf(capacity, i) <= tick) start += capOf(capacity, i++);
+    return measures[i];
+  };
+  for (const r of rehearsals) measureAt(r.tick).rehearsal ??= r.text;
+  // 音部記号の変更は、あとのもの（同じ小節に入ったら最後のもの）を残す
+  for (const c of clefs) measureAt(c.tick).clef = c.clef;
   return measures;
 }
 
@@ -554,6 +615,7 @@ function reflowEvents(all: MusicEvent[], capacity: CapacityOf, beat: number): Mu
           piece.id = ev.id;
           if (ev.articulations) piece.articulations = [...ev.articulations];
           if (ev.dynamic) piece.dynamic = ev.dynamic;
+          if (ev.kind === 'note' && ev.graces && piece.kind === 'note') piece.graces = cloneGraces(ev.graces);
           copyTexts(ev, piece);
         }
         push(piece);
@@ -716,9 +778,12 @@ export function shiftMeasureMarks(score: Score, from: number, delta: number): vo
 }
 
 /**
- * 演奏する小節の順番（リピートと番号付きカッコをたどる）。
+ * 演奏する小節の順番（リピート・番号付きカッコ・D.C./D.S.・コーダ・Fine をたどる）。
  * - :| で、直前の |: （なければ曲頭か、前の :| の次）へ戻る
  * - 番号付きカッコは、今が何回目かに合う番号のものだけ弾く
+ * - D.C. は曲頭へ、D.S. はセーニョ（その小節より前の最後のもの。なければ最初のもの）へ戻る（それぞれ1回だけ）。
+ *   戻ったあとはリピートを繰り返さず、番号付きカッコは最後のカッコだけ弾く（一般的な演奏の慣習）
+ * - 戻ったあとは Fine で終わり、To Coda からコーダ記号の小節へとぶ
  */
 export function playOrder(score: Score): number[] {
   const n = score.parts[0].measures.length;
@@ -728,16 +793,23 @@ export function playOrder(score: Score): number[] {
   let start = 0;
   let jumped = false;
   let inVolta = false;
+  /** D.C./D.S. で戻ったあとか */
+  let afterJump = false;
+  const jumpsDone = new Set<number>();
   const limit = n * 20;
+  const voltaKey = (m: number) => measureAttrsAt(score, m)?.volta?.join(',');
   while (i < n && order.length < limit) {
     const a = measureAttrsAt(score, i);
     if (a?.repeatStart && !jumped) { start = i; pass = 1; }
     jumped = false;
     if (a?.volta?.length) {
-      if (!a.volta.includes(pass)) {
-        // このカッコをとばす（同じ番号が続く所まで）
-        const key = a.volta.join(',');
-        while (i < n && measureAttrsAt(score, i)?.volta?.join(',') === key) i++;
+      const key = a.volta.join(',');
+      let groupEnd = i;
+      while (groupEnd < n && voltaKey(groupEnd) === key) groupEnd++;
+      // 戻ったあとは、すぐ後ろに別のカッコが続くカッコ（最後でないカッコ）をとばす
+      const skip = afterJump ? !!voltaKey(groupEnd) : !a.volta.includes(pass);
+      if (skip) {
+        i = groupEnd;
         continue;
       }
       inVolta = true;
@@ -748,7 +820,7 @@ export function playOrder(score: Score): number[] {
       start = i;
     }
     order.push(i);
-    if (a?.repeatEnd) {
+    if (a?.repeatEnd && !afterJump) {
       const times = a.repeatTimes ?? (a.volta?.length ? Math.max(...a.volta) + 1 : 2);
       if (pass < times) {
         pass++;
@@ -760,6 +832,34 @@ export function playOrder(score: Score): number[] {
       pass = 1;
       start = i + 1;
       inVolta = false;
+    }
+    if (afterJump && a?.fine) break;
+    if (afterJump && a?.toCoda) {
+      let c = i + 1;
+      while (c < n && !measureAttrsAt(score, c)?.coda) c++;
+      if (c < n) {
+        i = c;
+        start = c;
+        pass = 1;
+        inVolta = false;
+        continue;
+      }
+    }
+    if (a?.jump && !jumpsDone.has(i)) {
+      jumpsDone.add(i);
+      let target = 0;
+      if (a.jump.startsWith('ds')) {
+        const segnos = (score.measureAttrs ?? []).filter((x) => x.segno && x.measure < n).map((x) => x.measure);
+        const before = segnos.filter((m) => m <= i);
+        target = before.length ? before[before.length - 1] : segnos[0] ?? 0;
+      }
+      afterJump = true;
+      i = target;
+      start = target;
+      pass = 1;
+      inVolta = false;
+      jumped = true;
+      continue;
     }
     i++;
   }
