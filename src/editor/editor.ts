@@ -8,7 +8,7 @@ import {
 } from '../model/pitch';
 import {
   Clef, EventLocation, Instrument, Measure, MusicEvent, NoteEvent, Score, createMeasure, createPart, equalizeMeasureCounts,
-  eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
+  beatTicks, eventAt, eventTicks, findEvent, makeNote, makeRest, measureCapacity, normalizeMeasure, overwriteAt, reflowPart,
   TimeSignature,
 } from '../model/score';
 import {
@@ -342,7 +342,7 @@ export class Editor {
         for (const pc of pieces) {
           const ev: MusicEvent = pitches ? makeNote(pitches, pc.duration, pc.dots) : makeRest(pc.duration, pc.dots);
           if (prevNote) prevNote.tie = true;
-          overwriteAt(m, eventIndex, ev);
+          overwriteAt(m, eventIndex, ev, beatTicks(this.score.timeSignature));
           if (!firstId) firstId = ev.id;
           prevNote = ev.kind === 'note' ? ev : null;
           eventIndex++;
@@ -423,7 +423,7 @@ export class Editor {
       const replaced: MusicEvent = { ...ev, duration, dots } as MusicEvent;
       // 元の音の長さ分を休符に戻してから、新しい長さで上書きし直す
       m.events.splice(loc.eventIndex, 1, ...decomposeRests(eventTicks(ev)));
-      overwriteAt(m, loc.eventIndex, replaced);
+      overwriteAt(m, loc.eventIndex, replaced, beatTicks(this.score.timeSignature));
       this.inputDuration = duration;
       this.inputDots = dots;
     });
@@ -803,16 +803,8 @@ export class Editor {
   }
 
   setKeySignature(fifths: number) {
+    // MuseScore と同じく、今ある音の高さはそのまま残す（調号と違う音には臨時記号が付く）
     this.mutate(() => {
-      const old = this.score.keyFifths;
-      // 調号どおりだった音は新しい調号に合わせる（臨時記号付きの音はそのまま）
-      for (const p of this.score.parts)
-        for (const m of p.measures)
-          for (const ev of m.events)
-            if (ev.kind === 'note')
-              ev.pitches = ev.pitches.map((q) =>
-                q.alter === keyAlter(old, q.step) ? { ...q, alter: keyAlter(fifths, q.step) } : q,
-              );
       this.score.keyFifths = fifths;
     });
   }
@@ -829,7 +821,7 @@ export class Editor {
           .map((t) => ({ ...t, measure: Math.floor((t.measure * oldCap) / cap) }))
           .filter((t) => t.measure >= 1 && !seen.has(t.measure) && !!seen.add(t.measure));
       }
-      for (const p of this.score.parts) reflowPart(p, cap);
+      for (const p of this.score.parts) reflowPart(p, cap, beatTicks(ts));
       equalizeMeasureCounts(this.score);
       this.cursor = { partIndex: this.cursor.partIndex, measureIndex: 0, eventIndex: 0 };
       this.selectedId = null;

@@ -283,8 +283,9 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       ctx.fillText(score.composer, opts.width - MARGIN_X - cw, topMargin + 72);
     }
     ctx.restore();
-    tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
   }
+  // テンポはPDFでも楽譜と同じ図形で描く（タイトルは画像で載せるが、♩はフォントによって欠けるため）
+  if (page.first) tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
 
   const allNotes = new Map<string, { note: StaveNote; system: number }>();
   const ties: { from: string; to: string }[] = [];
