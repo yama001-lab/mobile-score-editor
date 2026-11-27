@@ -239,3 +239,9 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   #btn-rewind, #btn-redo, #btn-sound { display: none; }
   .hint { max-width: calc(100% - 28px); bottom: 70px; }
 }
+
+/* ---------- 手書き（ステップ3） ---------- */
+.pen-layer { position: absolute; left: 0; top: 0; z-index: 3; touch-action: pan-x pan-y; cursor: crosshair; }
+.pen-layer.finger-draws { touch-action: none; }
+.score.pen-mode { box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 4px rgba(0,0,0,.12); }
+.pen-guide { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }

@@ -1,5 +1,5 @@
 import './style.css';
-import { Editor } from './editor/editor';
+import { Editor, Mode } from './editor/editor';
 import { DURATION_LABELS, DurationType } from './model/duration';
 import { keyLabelJa, Step, toMidi } from './model/pitch';
 import { Clef, Instrument, Score, createScore, tempoAt, tempoMarkAt } from './model/score';
@@ -9,6 +9,9 @@ import { playNote, setTuning, unlock, Voice } from './audio/synth';
 import { PianoKeyboard } from './input/keyboard';
 import { MeasureHit, TempoHit, diatonicAtY, renderScore } from './render/render';
 import { applyIcons, ICONS, setIcon } from './ui/icons';
+import { PenLayer } from './handwriting/pen';
+import { applyRecognized, staffOf } from './handwriting/apply';
+import { Stroke, boxOf, clusterStrokes, recognizeCluster } from './handwriting/recognize';
 import { deleteScore, lastScoreId, listScores, loadScore, migrate, saveScore } from './storage/local';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -26,6 +29,14 @@ const wrap = $('#score-wrap');
 let hits: MeasureHit[] = [];
 let tempoHits: TempoHit[] = [];
 let zoom = Number(safeGet('score-editor:zoom')) || 1;
+
+// 手書きモードで楽譜の上に重ねる層（ステップ3）
+const penLayer = new PenLayer({
+  host: scoreEl,
+  scroller: wrap,
+  zoom: () => zoom,
+  onRecognize: (strokes) => handleInk(strokes),
+});
 
 function safeGet(k: string) {
   try { return localStorage.getItem(k); } catch { return null; }
@@ -55,11 +66,12 @@ function render() {
     scale: zoom,
     selectedId: editor.selectedId,
     selectedPitchIndex: editor.selectedPitchIndex,
-    cursor: editor.mode === 'input' ? editor.cursor : null,
+    cursor: editor.mode !== 'select' ? editor.cursor : null,
   });
   hits = res.hits;
   tempoHits = res.tempoHits;
   scoreEl.appendChild(playheadLayer);
+  penLayer.attach();
   focusInputPosition();
   drawPlayhead();
   updatePalette();
@@ -98,12 +110,17 @@ function updatePalette() {
   ($('#btn-undo') as HTMLButtonElement).disabled = !editor.canUndo;
   ($('#btn-redo') as HTMLButtonElement).disabled = !editor.canRedo;
   scoreEl.classList.toggle('input-mode', editor.mode === 'input');
+  scoreEl.classList.toggle('pen-mode', editor.mode === 'pen');
+  $('#pen-tools').hidden = editor.mode !== 'pen';
+  $('#btn-finger').classList.toggle('on', penLayer.fingerDraws);
   const title = $<HTMLInputElement>('#title');
   if (document.activeElement !== title) title.value = editor.score.title;
   const hintKey = `${editor.mode}:${panelShown()}`;
   if (hintKey !== lastHintKey) {
     lastHintKey = hintKey;
-    showHint(editor.mode === 'input'
+    showHint(editor.mode === 'pen'
+      ? '手書き：五線に音符を書くと、少し待って音符に変わります。白丸＝全、白丸＋棒＝2分、黒丸＋棒＝4分、旗で8分・16分。こすると消えます。2本指でスクロール'
+      : editor.mode === 'input'
       ? (panelShown()
         ? '入力：鍵盤を押すと青い帯の位置に入ります。押さえたまま別の鍵で和音。五線のタップでも入ります'
         : '入力：五線をタップすると、その高さの音符が入ります')
@@ -179,7 +196,7 @@ function eventIndexAt(h: MeasureHit, x: number) {
 let drag: { pointerId: number; startY: number; moved: boolean; onSelected: boolean; hit: MeasureHit } | null = null;
 
 scoreEl.addEventListener('pointerdown', (ev) => {
-  if (ev.button > 0) return;
+  if (ev.button > 0 || editor.mode === 'pen') return;
   const { x, y } = localPoint(ev);
   const th = tempoHits.find((t) => x >= t.x && x <= t.x + t.w && y >= t.y && y <= t.y + t.h);
   if (th) { tempoTap = { pointerId: ev.pointerId, measure: th.measure }; return; }
@@ -263,10 +280,46 @@ const on = (sel: string, fn: () => void) => $(sel).addEventListener('click', fn)
 document.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
   b.addEventListener('click', () => {
     const m = b.dataset.mode;
-    // 手書き（ステップ3）はまだ無いので、案内だけ出す
-    if (m === 'pen') { toast('手書き入力は次のステップで追加します。ペンで五線に書いた音符を読み取れるようになります。'); return; }
-    editor.setMode(m as 'select' | 'input');
+    setMode(m as Mode);
   }));
+
+function setMode(m: Mode) {
+  editor.setMode(m);
+  penLayer.setEnabled(m === 'pen');
+}
+
+on('#btn-finger', () => {
+  penLayer.setFingerDraws(!penLayer.fingerDraws);
+  safeSet('score-editor:finger-draws', penLayer.fingerDraws ? '1' : '0');
+  toast(penLayer.fingerDraws ? '指でも書けます（2本指でスクロール）' : 'ペンだけで書きます（指でスクロール）');
+  updatePalette();
+});
+if (safeGet('score-editor:finger-draws') === '0') penLayer.setFingerDraws(false);
+on('#btn-pen-help', () => $<HTMLDialogElement>('#dlg-pen-help').showModal());
+
+// ---------- 手書きの読み取り ----------
+
+function handleInk(strokes: Stroke[]) {
+  const s0 = hits[0]?.lineSpacing ?? 10;
+  const rejected: Stroke[] = [];
+  let message = '';
+  for (const group of clusterStrokes(strokes, s0)) {
+    const b = boxOf(group.flat());
+    const h = hitAt((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+    if (!h) { rejected.push(...group); message = '五線の上か近くに書いてください'; continue; }
+    const r = recognizeCluster(group, staffOf(h));
+    // 大譜表では、頭のある五線を使う
+    const target = r.kind === 'note' ? (hitAt(r.headX, r.headY) ?? h) : h;
+    const res = applyRecognized(editor, r, target, hits);
+    if (!res.ok) rejected.push(...group);
+    if (res.message) message = res.message;
+    if (res.ok && r.kind === 'note') previewSelected(diatonicAtY(target, r.headY));
+    // 次の記号のために、描き直して位置を取り直す
+    render();
+  }
+  if (rejected.length) penLayer.showRejected(rejected);
+  if (message) toast(message);
+}
 document.querySelectorAll<HTMLButtonElement>('[data-alter]').forEach((b) =>
   b.addEventListener('click', () => editor.setSelectedAccidental(Number(b.dataset.alter))));
 on('#btn-dot', () => editor.toggleDot());
@@ -355,7 +408,7 @@ document.addEventListener('keydown', (e) => {
   if (mod) return;
   if (k === ' ') { e.preventDefault(); togglePlay(); return; }
   if (/^[a-gA-G]$/.test(k)) {
-    if (editor.mode !== 'input') editor.setMode('input');
+    if (editor.mode !== 'input') setMode('input');
     if (e.shiftKey && editor.selected?.kind === 'note') {
       editor.toggleChordMode(); editor.inputStep(k.toUpperCase() as Step); editor.toggleChordMode();
     } else editor.inputStep(k.toUpperCase() as Step);
@@ -363,8 +416,9 @@ document.addEventListener('keydown', (e) => {
   }
   if (DURATION_KEYS[k]) { editor.setInputDuration(DURATION_KEYS[k]); return; }
   switch (k) {
-    case 'n': case 'N': editor.setMode(editor.mode === 'input' ? 'select' : 'input'); break;
-    case 'Escape': editor.setMode('select'); break;
+    case 'n': case 'N': setMode(editor.mode === 'input' ? 'select' : 'input'); break;
+    case 'p': case 'P': setMode(editor.mode === 'pen' ? 'input' : 'pen'); break;
+    case 'Escape': setMode('select'); break;
     case '.': editor.toggleDot(); break;
     case '0': editor.inputRest(); break;
     case 't': case 'T': editor.toggleTie(); break;
@@ -424,7 +478,7 @@ function newScore(grand: boolean) {
   const s = createScore({ grandStaff: grand });
   saveScore(s);
   editor.load(s);
-  editor.setMode('input');
+  setMode('input');
   dlgList.close();
 }
 on('#btn-new-single', () => newScore(false));
@@ -622,7 +676,7 @@ const panelShown = () => !panel.hidden;
 const held = new Map<number, Voice>();
 const keyboard = new PianoKeyboard($('#keyboard'), {
   onPress(midi, alsoHeld) {
-    if (editor.mode !== 'input') editor.setMode('input');
+    if (editor.mode === 'select') setMode('input');
     // 他の鍵を押さえたまま押した鍵は、直前に入れた音に和音として重ねる
     editor.inputMidi(midi, alsoHeld);
     if (soundOn && !player.playing) {
