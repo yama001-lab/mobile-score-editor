@@ -3,10 +3,25 @@
  * 描いた音符の位置（HitMap）を返し、タップ・ペン入力の当たり判定に使う。
  */
 import {
-  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Voice,
+  Accidental, Beam, Dot, Formatter, Renderer, Stave, StaveConnector, StaveNote, StaveTie, Tuplet, Voice, VoltaType,
 } from 'vexflow/bravura';
 import { diatonicIndex, keyAlter, keyName, accidentalSymbol } from '../model/pitch';
-import { Clef, MusicEvent, Score, eventTicks, measureCapacity, tempoMarkAt, voiceEvents } from '../model/score';
+import {
+  Clef, MusicEvent, Score, capacityAt, eventTicks, voiceEvents, keyAt, keyChangeAt, measureAttrsAt, measureCapacity, tempoMarkAt,
+  timeSigAt, timeSigChangeAt,
+} from '../model/score';
+import {
+  MeasureStart, SystemTextEntry, TextFocus, TextHit, TextItem, addTextSpacers, drawSystemTexts, flushHyphens,
+  newTextState, partSpacing, rehearsalWidth,
+} from './texts';
+import { SystemBox, attachArticulations, drawMarks } from './marks';
+
+// VexFlow の小節線の種類（Barline.type）
+const BAR_SINGLE = 1;
+const BAR_DOUBLE = 2;
+const BAR_END = 3;
+const BAR_REPEAT_BEGIN = 4;
+const BAR_REPEAT_END = 5;
 
 export interface RenderOptions {
   /** 描画に使う論理幅（px） */
@@ -15,11 +30,17 @@ export interface RenderOptions {
   scale?: number;
   selectedId?: string | null;
   selectedPitchIndex?: number;
+  /** 範囲選択に入っている音符・休符（範囲がなければ null） */
+  rangeIds?: Set<string> | null;
   cursor?: { partIndex: number; measureIndex: number; eventIndex: number; voice?: number } | null;
   /** タイトルを描くか（PDFでは日本語を画像で別に描くので false） */
   drawTitle?: boolean;
   /** ページの高さ。指定すると、システムをページごとに分ける */
   pageHeight?: number;
+  /** 入力中の歌詞・コードネームなど（薄い青で示す） */
+  textFocus?: TextFocus | null;
+  /** 指定すると、歌詞などの文字は描かずにここへ渡す（PDFで日本語を画像にして載せるため） */
+  textSink?: (item: TextItem) => void;
 }
 
 export interface EventHit {
@@ -92,13 +113,53 @@ interface BuiltMeasure {
   /** 0=声部1、1=声部2 */
   voiceIndex: number;
   ticks: number[];
+  tuplets: Tuplet[];
+}
+
+const BEAMABLE = new Set(['8', '16', '32']);
+
+/** 連符の中で、続いている8分以下の音符を1本の連桁にする */
+function tupletBeams(events: MusicEvent[], notes: StaveNote[]): Beam[] {
+  const beams: Beam[] = [];
+  let run: StaveNote[] = [];
+  let runId: string | null = null;
+  const flush = () => {
+    if (run.length > 1) beams.push(new Beam(run, true));
+    run = [];
+  };
+  events.forEach((ev, i) => {
+    const id = ev.tuplet?.id ?? null;
+    if (id !== runId) { flush(); runId = id; }
+    if (id && ev.kind === 'note' && BEAMABLE.has(ev.duration)) run.push(notes[i]);
+    else flush();
+  });
+  flush();
+  return beams;
+}
+
+/** 連続して同じ連符 id を持つ音をまとめて VexFlow の Tuplet にする（音の長さもここで縮まる） */
+function buildTuplets(events: MusicEvent[], notes: StaveNote[]): Tuplet[] {
+  const out: Tuplet[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const t = events[i].tuplet;
+    if (!t) continue;
+    let e = i + 1;
+    while (e < events.length && events[e].tuplet?.id === t.id) e++;
+    out.push(new Tuplet(notes.slice(i, e), {
+      num_notes: t.actual,
+      notes_occupied: t.normal,
+      ratioed: false,
+    }));
+    i = e - 1;
+  }
+  return out;
 }
 
 /**
  * 臨時記号を付ける音を決める。声部をまたいで、小節の中で時間順に「その段で直前に付いた記号」を覚える。
  * 戻り値は「声部:音の番号:和音の中の番号」の集合。
  */
-function accidentalsFor(score: Score, lists: MusicEvent[][]): Set<string> {
+function accidentalsFor(key: number, lists: MusicEvent[][]): Set<string> {
   const items: { t: number; v: number; i: number; ev: MusicEvent }[] = [];
   lists.forEach((evs, v) => {
     let t = 0;
@@ -112,7 +173,7 @@ function accidentalsFor(score: Score, lists: MusicEvent[][]): Set<string> {
     const now = new Map<number, number>();
     ev.pitches.forEach((p, k) => {
       const di = diatonicIndex(p);
-      const expected = state.has(di) ? state.get(di)! : keyAlter(score.keyFifths, p.step);
+      const expected = state.has(di) ? state.get(di)! : keyAlter(key, p.step);
       if (p.alter !== expected || (now.has(di) && now.get(di) !== p.alter)) out.add(`${v}:${i}:${k}`);
       now.set(di, p.alter);
     });
@@ -127,8 +188,9 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
   const m = part.measures[measureIndex];
   const lists = m.voice2 ? [m.events, m.voice2] : [m.events];
   const multi = lists.length > 1;
-  const ts = score.timeSignature;
-  const acc = accidentalsFor(score, lists);
+  const ts = timeSigAt(score, measureIndex);
+  const fullMeasure = capacityAt(score, measureIndex) >= measureCapacity(ts);
+  const acc = accidentalsFor(keyAt(score, measureIndex), lists);
   return lists.map((events, v) => {
     const stem = !multi ? undefined : v === 0 ? 1 : -1;
     const ticks: number[] = [];
@@ -136,10 +198,12 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
     const notes = events.map((ev, i) => {
       ticks.push(t);
       t += eventTicks(ev);
-      const selected = ev.id === opts.selectedId;
+      const inRange = !!opts.rangeIds?.has(ev.id);
+      const selected = !inRange && ev.id === opts.selectedId;
       let note: StaveNote;
       if (ev.kind === 'rest') {
-        const whole = events.length === 1;
+        // 1小節まるごとの休符は全休符の形で小節の真ん中に（弱起の小節は本当の長さで描く）
+        const whole = events.length === 1 && fullMeasure;
         note = new StaveNote({
           keys: [restKey(part.clef, multi ? (v === 0 ? 4 : -4) : 0)],
           duration: (whole ? 'w' : ev.duration) + 'r',
@@ -164,14 +228,46 @@ function buildMeasure(score: Score, partIndex: number, measureIndex: number, opt
           else note.setKeyStyle(pi, { fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
         }
       }
-      if (ev.dots && !(ev.kind === 'rest' && events.length === 1)) Dot.buildAndAttach([note], { all: true });
+      if (ev.dots && !(ev.kind === 'rest' && events.length === 1 && fullMeasure)) Dot.buildAndAttach([note], { all: true });
+      addTextSpacers(note, ev);
+      if (inRange) note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
       if (selected && ev.kind === 'rest') note.setStyle({ fillStyle: COLOR_SELECTED, strokeStyle: COLOR_SELECTED });
+      attachArticulations(note, ev);
       return note;
     });
+    const tuplets = buildTuplets(events, notes);
     const voice = new Voice({ num_beats: ts.beats, beat_value: ts.beatType }).setMode(Voice.Mode.SOFT);
     voice.addTickables(notes);
-    return { notes, voice, events, voiceIndex: v, ticks };
+    return { notes, voice, events, tuplets, voiceIndex: v, ticks };
   });
+}
+
+const tsSpec = (score: Score, mi: number) => {
+  const ts = timeSigAt(score, mi);
+  return `${ts.beats}/${ts.beatType}`;
+};
+
+/** 小節の頭に付ける記号（段の頭か途中かで変わる）を stave に足す */
+function addStartModifiers(st: Stave, score: Score, clef: Clef, mi: number, systemStart: boolean) {
+  if (systemStart) {
+    st.addClef(clef).addKeySignature(keyName(keyAt(score, mi)));
+  } else {
+    const kc = keyChangeAt(score, mi);
+    if (kc !== null) st.addKeySignature(keyName(kc), keyName(keyAt(score, mi - 1)));
+  }
+  if (mi === 0 || timeSigChangeAt(score, mi)) st.addTimeSignature(tsSpec(score, mi));
+  if (measureAttrsAt(score, mi)?.repeatStart) st.setBegBarType(BAR_REPEAT_BEGIN);
+}
+
+/** 小節の頭の記号の幅 */
+function modifiersWidth(score: Score, mi: number, systemStart: boolean): number {
+  let w = 0;
+  for (const part of score.parts) {
+    const s = new Stave(0, 0, 400);
+    addStartModifiers(s, score, part.clef, mi, systemStart);
+    w = Math.max(w, s.getNoteStartX() - s.getX());
+  }
+  return w + 10;
 }
 
 /** 小節ごとの必要な幅（音符部分のみ） */
@@ -183,15 +279,15 @@ function measureContentWidth(score: Score, measureIndex: number, opts: RenderOpt
   return Math.max(70, min * 1.5 + 30);
 }
 
-function startModifiersWidth(score: Score, firstMeasure: boolean): number {
-  let w = 0;
-  for (const part of score.parts) {
-    const s = new Stave(0, 0, 400);
-    s.addClef(part.clef).addKeySignature(keyName(score.keyFifths));
-    if (firstMeasure) s.addTimeSignature(`${score.timeSignature.beats}/${score.timeSignature.beatType}`);
-    w = Math.max(w, s.getNoteStartX() - s.getX());
-  }
-  return w + 10;
+function startModifiersWidth(score: Score, mi: number): number {
+  return modifiersWidth(score, mi, true);
+}
+
+/** 段の途中の小節で、調号・拍子の変更やリピート開始のために増える幅 */
+function midModifiersWidth(score: Score, mi: number): number {
+  const a = measureAttrsAt(score, mi);
+  if (!a || (keyChangeAt(score, mi) === null && !timeSigChangeAt(score, mi) && !a.repeatStart)) return 0;
+  return modifiersWidth(score, mi, false);
 }
 
 export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[] {
@@ -202,7 +298,7 @@ export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[]
   let cur: SystemLayout = { measures: [], widths: [] };
   let used = 0;
   for (let i = 0; i < n; i++) {
-    const head = cur.measures.length === 0 ? startModifiersWidth(score, i === 0) : 0;
+    const head = cur.measures.length === 0 ? startModifiersWidth(score, i) : midModifiersWidth(score, i);
     const w = content[i] + head;
     if (cur.measures.length && used + w > available) {
       systems.push(cur);
@@ -221,7 +317,7 @@ export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[]
     const total = s.widths.reduce((a, b) => a + b, 0);
     const last = si === systems.length - 1;
     if (last && total < available * 0.6) return;
-    const head = startModifiersWidth(score, s.measures[0] === 0);
+    const head = startModifiersWidth(score, s.measures[0]);
     const extra = (available - total) / s.widths.length;
     s.widths = s.widths.map((w, k) => (k === 0 ? Math.max(head + 40, w + extra) : w + extra));
     const sum = s.widths.reduce((a, b) => a + b, 0);
@@ -230,8 +326,22 @@ export function layoutSystems(score: Score, opts: RenderOptions): SystemLayout[]
   return systems;
 }
 
+/** 段の中での各パートの五線のY（段の上端から）。歌詞・コードネームがあるパートは間を広げる */
+export function partOffsets(score: Score): number[] {
+  const sp = partSpacing(score);
+  const out: number[] = [];
+  let y = 0;
+  sp.forEach((s) => {
+    y += s.above;
+    out.push(y);
+    y += PART_SPACING + s.below;
+  });
+  return out;
+}
+
 export function systemHeight(score: Score) {
-  return score.parts.length * PART_SPACING + SYSTEM_GAP;
+  const sp = partSpacing(score);
+  return sp.reduce((h, s) => h + PART_SPACING + s.above + s.below, 0) + SYSTEM_GAP;
 }
 
 export interface Page {
@@ -270,6 +380,8 @@ export interface TempoHit {
 export interface RenderResult {
   hits: MeasureHit[];
   tempoHits: TempoHit[];
+  /** 歌詞・コードネーム・文字・練習番号の位置（タップで直すため） */
+  textHits: TextHit[];
   height: number;
 }
 
@@ -313,6 +425,10 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
   ctx.scale(scale, scale);
   const hits: MeasureHit[] = [];
   const tempoHits: TempoHit[] = [];
+  const textHits: TextHit[] = [];
+  const spacing = partSpacing(score);
+  const offsets = partOffsets(score);
+  const textState = newTextState();
 
   if (page.first && opts.drawTitle !== false) {
     ctx.save();
@@ -325,31 +441,56 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       ctx.fillText(score.composer, opts.width - MARGIN_X - cw, topMargin + 72);
     }
     ctx.restore();
-    tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
   }
+  // テンポはPDFでも楽譜と同じ図形で描く（タイトルは画像で載せるが、♩はフォントによって欠けるため）
+  if (page.first) tempoHits.push({ ...drawTempo(ctx, MARGIN_X, topMargin + 72, score.tempo), measure: 0 });
 
   const allNotes = new Map<string, { note: StaveNote; system: number }>();
   const ties: { from: string; to: string }[] = [];
+  const boxes: SystemBox[] = [];
+  const partOf = new Map<string, number>();
 
   page.systems.forEach((sys, si) => {
     const sysY = contentTop + si * sysH;
     let x = MARGIN_X;
+    const textEntries: SystemTextEntry[] = [];
+    const measureStarts: MeasureStart[] = [];
     sys.measures.forEach((mi, k) => {
       const w = sys.widths[k];
+      const attrs = measureAttrsAt(score, mi);
+      const last = mi === score.parts[0].measures.length - 1;
       const staves = score.parts.map((part, pi) => {
-        const st = new Stave(x, sysY + pi * PART_SPACING, w);
-        if (k === 0) st.addClef(part.clef).addKeySignature(keyName(score.keyFifths));
-        if (mi === 0) st.addTimeSignature(`${score.timeSignature.beats}/${score.timeSignature.beatType}`);
-        if (mi === score.parts[0].measures.length - 1) st.setEndBarType(3 /* END */);
-        if (k === 0 && mi > 0) st.setMeasure(mi + 1);
+        const st = new Stave(x, sysY + offsets[pi], w);
+        addStartModifiers(st, score, part.clef, mi, k === 0);
+        if (attrs?.repeatEnd) st.setEndBarType(BAR_REPEAT_END);
+        else if (last) st.setEndBarType(BAR_END);
+        // 次の小節で調号・拍子が変わるときは複縦線
+        else if (keyChangeAt(score, mi + 1) !== null || timeSigChangeAt(score, mi + 1)) st.setEndBarType(BAR_DOUBLE);
+        else st.setEndBarType(BAR_SINGLE);
+        // 小節番号：弱起の小節は 0 として数える（表示はしない）
+        const num = mi + (score.pickup ? 0 : 1);
+        if (k === 0 && num > 1) st.setMeasure(num);
         return st;
       });
+      const volta = voltaFor(score, mi);
+      if (volta) staves[0].setVoltaType(volta.type, volta.label, 0);
       const noteStart = Math.max(...staves.map((s) => s.getNoteStartX()));
       staves.forEach((s) => s.setNoteStartX(noteStart));
+      if (k === 0) {
+        boxes[si] = {
+          x0: noteStart - 4,
+          x1: x + sys.widths.reduce((a, b) => a + b, 0) - 4,
+          tops: staves.map((s) => s.getYForLine(0)),
+          bottoms: staves.map((s) => s.getYForLine(4)),
+        };
+      }
       staves.forEach((s) => s.setContext(ctx).draw());
       const mark = mi > 0 ? tempoMarkAt(score, mi) : null;
+      measureStarts.push({ measureIndex: mi, x: k === 0 ? noteStart - 4 : x + 6, topLineY: staves[0].getYForLine(0) });
       if (mark !== null) {
-        const tx = k === 0 ? noteStart - 4 : x + 6;
+        let tx = k === 0 ? noteStart - 4 : x + 6;
+        const rh = score.parts[0].measures[mi].rehearsal;
+        if (rh) tx += rehearsalWidth(rh) + 6;
         tempoHits.push({ ...drawTempo(ctx, tx, staves[0].getYForLine(0) - 22, mark), measure: mi });
       }
 
@@ -363,12 +504,15 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
         const voiceHits: EventHit[][] = [[], []];
         for (const b of vs) {
           const multi = vs.length > 1;
-          const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note'), {
-            groups: Beam.getDefaultBeamGroups(`${score.timeSignature.beats}/${score.timeSignature.beatType}`),
+          // 連符の音は連符ごとに連桁でつなぎ、それ以外は拍ごとに自動でつなぐ
+          const beams = Beam.generateBeams(b.notes.filter((_, i) => b.events[i].kind === 'note' && !b.events[i].tuplet), {
+            groups: Beam.getDefaultBeamGroups(tsSpec(score, mi)),
             ...(multi ? { maintain_stem_directions: true } : {}),
           });
+          beams.push(...tupletBeams(b.events, b.notes));
           b.voice.draw(ctx, stave);
           beams.forEach((bm) => bm.setContext(ctx).draw());
+          b.tuplets.forEach((t) => t.setContext(ctx).draw());
           const evHits: EventHit[] = b.notes.map((n, i) => {
             const nx = n.getAbsoluteX();
             return {
@@ -400,11 +544,27 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
         for (const b of vs) {
           b.events.forEach((ev, i) => {
             allNotes.set(ev.id, { note: b.notes[i], system: si });
+            textEntries.push({
+              partIndex: pi, measureIndex: mi, ev, note: b.notes[i],
+              topLineY: hit.topLineY, bottomLineY: hit.topLineY + hit.lineSpacing * 4,
+            });
+            partOf.set(ev.id, pi);
             if (ev.kind === 'note' && ev.tie) {
               const next = nextEvent(score, pi, mi, i, b.voiceIndex);
               if (next && next.kind === 'note') ties.push({ from: ev.id, to: next.id });
             }
           });
+        }
+
+        // 範囲選択の帯
+        const inRange = evHits.filter((h) => opts.rangeIds?.has(h.id));
+        if (inRange.length) {
+          const l = Math.max(inRange[0].left, inRange[0].x - 12);
+          const r = inRange[inRange.length - 1].right;
+          ctx.save();
+          ctx.setFillStyle('rgba(21,101,192,0.12)');
+          ctx.fillRect(l, hit.topLineY - 14, r - l, hit.lineSpacing * 4 + 28);
+          ctx.restore();
         }
 
         // 入力位置（カーソル）。声部2は緑
@@ -434,7 +594,11 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
       }
       x += w;
     });
+    textHits.push(...drawSystemTexts(ctx, score, textEntries, measureStarts, si, textState, {
+      sink: opts.textSink, focus: opts.textFocus, spacing,
+    }));
   });
+  flushHyphens(ctx, textState, opts.textSink);
 
   for (const t of ties) {
     const a = allNotes.get(t.from);
@@ -458,7 +622,24 @@ export function renderPage(el: HTMLElement, score: Score, page: Page, opts: Rend
     }
   }
 
-  return { hits, tempoHits, height };
+  drawMarks(ctx, score, allNotes, boxes, partOf);
+
+  return { hits, tempoHits, textHits, height };
+}
+
+/** 番号付きカッコの描き方。続きの小節は、番号を付けずに線だけ続ける */
+function voltaFor(score: Score, mi: number): { type: number; label: string } | null {
+  const a = measureAttrsAt(score, mi);
+  if (!a?.volta?.length) return null;
+  const key = a.volta.join(',');
+  const prevSame = measureAttrsAt(score, mi - 1)?.volta?.join(',') === key;
+  const nextSame = measureAttrsAt(score, mi + 1)?.volta?.join(',') === key && mi + 1 < score.parts[0].measures.length;
+  // 最後のカッコ（戻らない方）は右端を閉じない
+  const closeEnd = !nextSame && !!a.repeatEnd;
+  const begin = !prevSame;
+  const label = a.volta.map((n) => `${n}.`).join(' ');
+  if (begin) return { type: closeEnd ? VoltaType.BEGIN_END : VoltaType.BEGIN, label };
+  return { type: closeEnd ? VoltaType.END : VoltaType.MID, label: '' };
 }
 
 function nextEvent(score: Score, pi: number, mi: number, ei: number, voice = 0): MusicEvent | undefined {

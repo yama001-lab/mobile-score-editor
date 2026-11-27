@@ -39,7 +39,7 @@
     <div id="score-wrap">
       <div id="score" class="score"></div>
     </div>
-    <p class="hint" id="hint" role="status"></p>
+    <p class="hint" id="hint" role="status" title="タップで閉じる"></p>
     <div class="zoom" aria-label="表示の大きさ">
       <button id="btn-zoom-out" class="zb" data-icon="zoomOut" title="縮小" aria-label="縮小"></button>
       <button id="zoom-label" class="zb label" title="100%に戻す">100%</button>
@@ -69,8 +69,8 @@
           <button id="btn-dot" class="tool" data-icon="dot" title="付点 (.)"><span>付点</span></button>
           <button id="btn-rest" class="tool" data-icon="rest" title="休符を入れる (0)"><span>休符</span></button>
           <button id="btn-tie" class="tool" data-icon="tie" title="タイ (T)。入力モードでは直前の音と同じ高さの音をタイでつないで足す"><span>タイ</span></button>
+          <button id="btn-tuplet" class="tool" data-icon="tuplet" title="連符（3連符など）。入力モードでは今の音価の長さで、選択モードでは選んだ音の長さで作る (Ctrl+3 など)" aria-haspopup="menu"><span>連符</span></button>
           <button id="btn-chord" class="tool" data-icon="chord" title="和音：入れる音を直前の音に重ねる（鍵を押さえたまま別の鍵を押しても和音）"><span>和音</span></button>
-          <button id="btn-back" class="tool" data-icon="back" title="直前の操作を取り消す"><span>戻す</span></button>
         </div>
         <div class="group" id="voice-tools" aria-label="声部">
           <button data-voice="0" class="tool acc voice1" title="声部1（符尾が上）に入れる。選んだ音符の声部に切り替わります"><b>1</b><span>声部1</span></button>
@@ -87,6 +87,12 @@
           <button id="btn-left" class="tool" data-icon="left" title="前の音と入れ替え"><span>前と</span></button>
           <button id="btn-right" class="tool" data-icon="right" title="次の音と入れ替え"><span>次と</span></button>
           <button id="btn-delete" class="tool danger" data-icon="trash" title="削除 (Delete)"><span>削除</span></button>
+        </div>
+        <div class="group" id="range-tools" aria-label="範囲とコピー">
+          <button id="btn-range" class="tool" data-icon="range" title="範囲選択：オンにすると、次にタップした音までを範囲にします（Shift+タップ、長押ししてなぞっても選べます）"><span>範囲</span></button>
+          <button id="btn-copy" class="tool" data-icon="copy" title="コピー (Ctrl+C)"><span>コピー</span></button>
+          <button id="btn-cut" class="tool" data-icon="cut" title="切り取り (Ctrl+X)"><span>切り取り</span></button>
+          <button id="btn-paste" class="tool" data-icon="paste" title="貼り付け (Ctrl+V)：選んだ音（入力モードでは入力位置）から上書きで貼ります"><span>貼り付け</span></button>
         </div>
         <div class="group">
           <button id="btn-tempo" class="tool" data-icon="tempo" title="カーソルのある小節からテンポを変える（楽譜上のテンポ表記をタップしても変えられます）"><span>テンポ</span></button>
@@ -110,8 +116,21 @@
     <button role="menuitem" id="btn-add-measure">小節を最後に追加</button>
     <button role="menuitem" id="btn-insert-measure">カーソルの前に小節を挿入</button>
     <button role="menuitem" id="btn-remove-measure" class="danger">カーソルのある小節を削除</button>
+    <button role="menuitem" id="btn-select-measure">カーソルのある小節を範囲選択</button>
+    <button role="menuitem" id="btn-select-all">すべてを範囲選択</button>
     <hr />
-    <button role="menuitem" id="btn-meter">拍子・調号を変える…</button>
+    <button role="menuitem" id="btn-measure-marks">リピート・途中の調や拍子・弱起…</button>
+    <button role="menuitem" id="btn-meter">曲全体の拍子・調号…</button>
+  </div>
+
+  <div id="tuplet-menu" class="menu" role="menu" hidden>
+    <button role="menuitem" data-tuplet="3">3連符</button>
+    <button role="menuitem" data-tuplet="5">5連符</button>
+    <button role="menuitem" data-tuplet="6">6連符</button>
+    <button role="menuitem" data-tuplet="2">2連符（付点の音価で）</button>
+    <button role="menuitem" data-tuplet="4">4連符（付点の音価で）</button>
+    <hr />
+    <button role="menuitem" id="btn-remove-tuplet" class="danger">連符を外す</button>
   </div>
 
   <dialog id="dlg-list">
@@ -205,6 +224,48 @@
       <div class="row end">
         <button value="cancel" class="pb">キャンセル</button>
         <button value="ok" class="pb primary">移調する</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-measure">
+    <form method="dialog" class="dlg">
+      <h2 id="measure-heading">小節の記号</h2>
+      <h3>リピート</h3>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-repeat-start" /> 小節の頭に |:（ここから繰り返す）</label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="mk-repeat-end" /> 小節の終わりに :|（ここで戻る）</label>
+        <label id="mk-times-wrap">全部で <select id="mk-times"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select> 回</label>
+      </div>
+      <label>番号付きカッコ（1番・2番）
+        <select id="mk-volta">
+          <option value="">なし</option>
+          <option value="1">1.（1回目だけ弾く）</option>
+          <option value="2">2.（2回目だけ弾く）</option>
+          <option value="3">3.</option>
+          <option value="1,2">1. 2.</option>
+        </select>
+      </label>
+      <p class="note">カッコは続く小節に同じ番号を付けると1つにつながります。1番カッコの最後の小節に「:|」を付けてください。</p>
+      <h3>この小節から変える</h3>
+      <div class="row">
+        <label>拍子
+          <select id="mk-beats"><option value="">変えない</option></select> /
+          <select id="mk-beattype"><option>2</option><option>4</option><option>8</option></select>
+        </label>
+        <label>調号 <select id="mk-key"><option value="">変えない</option></select></label>
+      </div>
+      <p class="note">拍子を変えると、次の拍子変更の手前まで音符が新しい小節の長さに並べ直されます。調号を変えても音の高さはそのままです。</p>
+      <div id="mk-pickup-wrap">
+        <h3>弱起（アウフタクト）</h3>
+        <label>1小節目の長さ <select id="mk-pickup"><option value="0">普通の1小節</option></select></label>
+        <p class="note">短くすると、1小節目の前の方が休符だけなら後ろの音を残します。</p>
+      </div>
+      <div class="row end">
+        <button value="cancel" class="pb">キャンセル</button>
+        <button value="ok" class="pb primary">決定</button>
       </div>
     </form>
   </dialog>

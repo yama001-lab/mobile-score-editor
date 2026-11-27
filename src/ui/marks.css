@@ -1,0 +1,10 @@
+/* 記号の道具（src/ui/marks-palette.ts） */
+.dyn-glyph { font-family: 'Times New Roman', Times, serif; font-style: italic; font-weight: 700; font-size: 19px; line-height: 24px; letter-spacing: -.5px; }
+#btn-dyn .dyn-glyph { display: inline-block; min-width: 24px; text-align: center; }
+.marks-menu { min-width: 260px; max-width: calc(100vw - 16px); }
+.marks-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.marks-grid button { text-align: center; padding: 0; }
+.marks-menu button.on { background: var(--accent-soft); color: var(--accent); }
+.marks-menu button.with-icon { display: flex; align-items: center; gap: 10px; }
+.marks-menu button:disabled { opacity: .35; }
+.marks-note { margin: 4px 8px 2px; font-size: 12px; color: #6b7280; line-height: 1.4; }
